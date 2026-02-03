@@ -46,7 +46,7 @@ Thumbs.db
 .idea/
 *.swp
 *.log
-
+.git
 # --- 其他 ---
 /dist/
 /node_modules/

@@ -5,6 +5,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import List, Tuple, Dict
 
+import numpy as np
 from PIL import Image
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -129,20 +130,38 @@ def _center_crop_pair(img_a: Image.Image, img_b: Image.Image, size: int) -> Tupl
     return TF.center_crop(img_a, [size, size]), TF.center_crop(img_b, [size, size])
 
 
+def _load_image(path: str, use_cv2: bool = False) -> Image.Image:
+    """加载图像，use_cv2 时用 cv2（通常更快，且支持中文路径）"""
+    if use_cv2:
+        try:
+            import cv2
+            buf = np.fromfile(path, dtype=np.uint8)
+            arr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+            if arr is None:
+                raise ValueError(f"cv2.imdecode failed: {path}")
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+            return Image.fromarray(arr)
+        except Exception:
+            pass
+    return Image.open(path).convert("RGB")
+
+
 class HazyClearDataset(Dataset):
-    def __init__(self, pairs: List[PairItem], image_size: int = 256, train: bool = True, random_flip: bool = True):
+    def __init__(self, pairs: List[PairItem], image_size: int = 256, train: bool = True, random_flip: bool = True,
+                 use_cv2_load: bool = False):
         self.pairs = pairs
         self.image_size = image_size
         self.train = train
         self.random_flip = random_flip
+        self.use_cv2_load = use_cv2_load
 
     def __len__(self) -> int:
         return len(self.pairs)
 
     def __getitem__(self, idx: int):
         item = self.pairs[idx]
-        hazy = Image.open(item.hazy_path).convert("RGB")
-        clean = Image.open(item.clean_path).convert("RGB")
+        hazy = _load_image(item.hazy_path, self.use_cv2_load)
+        clean = _load_image(item.clean_path, self.use_cv2_load)
 
         if self.image_size is not None:
             if self.train:
@@ -201,34 +220,44 @@ def get_dataloaders(cfg: dict):
     if len(train_pairs) == 0:
         raise ValueError("划分后训练集为空，请检查 split.train_ratio 或数据量。")
 
+    use_cv2 = cfg["transforms"].get("use_cv2_load", False)
     train_set = HazyClearDataset(
         train_pairs,
         image_size=cfg["transforms"]["image_size"],
         train=True,
         random_flip=cfg["transforms"]["random_flip"],
+        use_cv2_load=use_cv2,
     )
     val_set = HazyClearDataset(
         val_pairs,
         image_size=cfg["transforms"]["image_size"],
         train=False,
         random_flip=False,
+        use_cv2_load=use_cv2,
     )
 
+    load_cfg = cfg["loader"]
+    nw = load_cfg["num_workers"]
+    loader_kw = dict(
+        num_workers=nw,
+        pin_memory=load_cfg["pin_memory"],
+    )
+    if nw > 0:
+        loader_kw["prefetch_factor"] = load_cfg.get("prefetch_factor", 2)
+        loader_kw["persistent_workers"] = load_cfg.get("persistent_workers", False)
     train_loader = DataLoader(
         train_set,
-        batch_size=cfg["loader"]["batch_size"],
+        batch_size=load_cfg["batch_size"],
         shuffle=True,
-        num_workers=cfg["loader"]["num_workers"],
-        pin_memory=cfg["loader"]["pin_memory"],
         drop_last=True,
+        **loader_kw,
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=cfg["loader"]["val_batch_size"],
+        batch_size=load_cfg["val_batch_size"],
         shuffle=False,
-        num_workers=cfg["loader"]["num_workers"],
-        pin_memory=cfg["loader"]["pin_memory"],
         drop_last=False,
+        **loader_kw,
     )
 
     return train_loader, val_loader, train_set, val_set

@@ -18,14 +18,17 @@ split:
   shuffle: true
 
 loader:
-  batch_size: 4
-  val_batch_size: 2
-  num_workers: 4
-  pin_memory: true
+  batch_size: 32          # 增大以吃满 GPU，显存不足可改回 4
+  val_batch_size: 8
+  num_workers: 8         # 提高 CPU 并行读图，可按 CPU 核数调（建议 4–8）
+  pin_memory: true       # 加速 CPU→GPU 传输
+  prefetch_factor: 4     # 每 worker 预取 batch 数，减少 GPU 等待
+  persistent_workers: true  # 复用 worker，避免每 epoch 重建
 
 transforms:
   image_size: 256
   random_flip: true
+  use_cv2_load: true   # cv2 读图通常比 PIL 快，且支持中文路径
 
 model:
   num_layers: 10

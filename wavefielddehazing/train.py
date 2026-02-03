@@ -74,6 +74,12 @@ def main():
                         help="使用数据的前 x%% (0-1)，如 0.1 表示 10%%")
     parser.add_argument("--root", type=str, default=None,
                         help="覆盖 config 中的 paths.root，指定数据根目录")
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="覆盖 config 的 batch_size，显存不足可减小")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="从指定 checkpoint 继续训练，如 runs/xxx/checkpoints/last.pth")
+    parser.add_argument("--resume_new_run", action="store_true",
+                        help="与 --resume 同用：加载模型但保存到新的 run 目录，不覆盖原 run")
     args = parser.parse_args()
 
     with open(args.config, "r", encoding="utf-8") as f:
@@ -82,23 +88,55 @@ def main():
     if args.root is not None:
         cfg["paths"]["root"] = args.root
         print(f"==> 使用数据根目录: {args.root}")
+    if args.batch_size is not None:
+        cfg["loader"]["batch_size"] = args.batch_size
+        cfg["loader"]["val_batch_size"] = max(1, args.batch_size)
+        print(f"==> 使用 batch_size: {args.batch_size}")
 
     set_seed(cfg.get("seed", 123))
 
-    run_id = timestamp()
-    runs_dir = cfg["output"]["runs_dir"]
-    run_dir = os.path.join(runs_dir, run_id)
+    # 固定输入尺寸时开启，可加速卷积
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+
+    resume_path = args.resume
+    resume_new_run = args.resume_new_run
+    start_epoch = 1
+    if resume_path:
+        resume_path = os.path.normpath(os.path.abspath(resume_path))
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(f"--resume 文件不存在: {resume_path}")
+        # 推断 run_dir：path 形如 .../runs/xxx/checkpoints/last.pth
+        ckpt_dir = os.path.dirname(resume_path)
+        if os.path.basename(ckpt_dir) == "checkpoints":
+            inferred_run_dir = os.path.dirname(ckpt_dir)
+        else:
+            inferred_run_dir = None
+        use_inferred_run = inferred_run_dir and os.path.isdir(inferred_run_dir) and not resume_new_run
+
+    if resume_path and use_inferred_run:
+        run_dir = inferred_run_dir
+        print(f"==> 从 checkpoint 继续训练，输出目录: {run_dir}")
+    else:
+        run_id = timestamp()
+        runs_dir = cfg["output"]["runs_dir"]
+        run_dir = os.path.join(runs_dir, run_id)
+        if resume_path:
+            print(f"==> 从 checkpoint 加载，保存到新 run: {run_dir}")
+
     ensure_dir(run_dir)
     ensure_dir(os.path.join(run_dir, "checkpoints"))
     ensure_dir(os.path.join(run_dir, "samples"))
 
-    # Save config snapshot
-    config_snapshot_path = os.path.join(run_dir, "config.yaml")
-    with open(config_snapshot_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, sort_keys=False)
-
-    # Copy code snapshot
-    copy_code_snapshot(os.getcwd(), os.path.join(run_dir, "code_snapshot"))
+    # 非 resume 或新 run 时保存 config 和 code 快照
+    if not resume_path or not use_inferred_run:
+        config_snapshot_path = os.path.join(run_dir, "config.yaml")
+        with open(config_snapshot_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        copy_code_snapshot(os.getcwd(), os.path.join(run_dir, "code_snapshot"))
+    else:
+        # resume 到原 run：可用 checkpoint 内 config 覆盖（可选），此处优先用当前 config
+        pass
 
     train_loader, val_loader, train_set, val_set = get_dataloaders(cfg)
 
@@ -110,26 +148,33 @@ def main():
         val_set = Subset(val_set, range(n_val))
         bs = cfg["loader"]["batch_size"]
         drop_last = n_train > bs  # 样本太少时 drop_last=False 避免 0 batch
+        lc = cfg["loader"]
+        nw = lc["num_workers"]
+        sub_kw = dict(num_workers=nw, pin_memory=lc["pin_memory"])
+        if nw > 0:
+            sub_kw["prefetch_factor"] = lc.get("prefetch_factor", 2)
+            sub_kw["persistent_workers"] = lc.get("persistent_workers", False)
         train_loader = DataLoader(
             train_set,
             batch_size=min(bs, n_train),
             shuffle=True,
-            num_workers=cfg["loader"]["num_workers"],
-            pin_memory=cfg["loader"]["pin_memory"],
             drop_last=drop_last,
+            **sub_kw,
         )
         val_loader = DataLoader(
             val_set,
-            batch_size=min(cfg["loader"]["val_batch_size"], n_val),
+            batch_size=min(lc["val_batch_size"], n_val),
             shuffle=False,
-            num_workers=cfg["loader"]["num_workers"],
-            pin_memory=cfg["loader"]["pin_memory"],
             drop_last=False,
+            **sub_kw,
         )
         print(f"==> 使用数据前 {args.data_ratio*100:.0f}%: train={n_train}, val={n_val}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    pin = cfg["loader"]["pin_memory"]
     model = build_model_from_config(cfg).to(device)
+    if cfg.get("train", {}).get("compile", False) and hasattr(torch, "compile"):
+        model = torch.compile(model, mode="reduce-overhead")
 
     base_lr = cfg["train"]["lr"]
     warmup_epochs = cfg["train"].get("warmup_epochs", 0)
@@ -138,6 +183,27 @@ def main():
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg["train"]["cosine_tmax"])
 
     scaler = GradScaler(enabled=cfg["train"]["amp"])
+    best_psnr = -1.0
+
+    # 从 checkpoint 恢复
+    if resume_path:
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"], strict=True)
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_psnr = ckpt.get("best_psnr", -1.0)
+        if "optimizer_state" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+            except Exception as e:
+                print(f"  [Warn] 无法加载 optimizer 状态: {e}，使用当前 optimizer")
+        if "scaler_state" in ckpt and hasattr(scaler, "load_state_dict"):
+            try:
+                scaler.load_state_dict(ckpt["scaler_state"])
+            except Exception:
+                pass
+        for _ in range(start_epoch - 1):
+            scheduler.step()
+        print(f"==> 已加载 {resume_path}, 从 epoch {start_epoch} 继续, best_psnr={best_psnr:.4f}")
 
     l1_weight = cfg["loss"]["l1"]
     ssim_weight = cfg["loss"]["ssim"]
@@ -163,19 +229,19 @@ def main():
     fixed_loader = DataLoader(Subset(val_set, fixed_indices), batch_size=len(fixed_indices), shuffle=False)
 
     log_path = os.path.join(run_dir, "logs.csv")
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "val_psnr", "val_ssim"])
+    log_exists = os.path.isfile(log_path)
+    if not log_exists:
+        with open(log_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "train_loss", "val_psnr", "val_ssim"])
 
-    best_psnr = -1.0
-
-    for epoch in range(1, cfg["train"]["epochs"] + 1):
+    for epoch in range(start_epoch, cfg["train"]["epochs"] + 1):
         model.train()
         running_loss = 0.0
         n_steps = 0
         for step, (hazy, clean, _, _) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}")):
-            hazy = hazy.to(device)
-            clean = clean.to(device)
+            hazy = hazy.to(device, non_blocking=pin)
+            clean = clean.to(device, non_blocking=pin)
 
             optimizer.zero_grad(set_to_none=True)
             with autocast(enabled=cfg["train"]["amp"]):
@@ -240,8 +306,8 @@ def main():
         val_ssim = 0.0
         with torch.no_grad():
             for hazy, clean, _, _ in val_loader:
-                hazy = hazy.to(device)
-                clean = clean.to(device)
+                hazy = hazy.to(device, non_blocking=pin)
+                clean = clean.to(device, non_blocking=pin)
                 pred = model(hazy)
                 val_psnr += psnr(pred, clean).item()
                 val_ssim += ssim(pred, clean).item()
@@ -256,8 +322,8 @@ def main():
 
         # Save sample grid
         for hazy, clean, _, _ in fixed_loader:
-            hazy = hazy.to(device)
-            clean = clean.to(device)
+            hazy = hazy.to(device, non_blocking=pin)
+            clean = clean.to(device, non_blocking=pin)
             with torch.no_grad():
                 pred = model(hazy)
             grid_path = os.path.join(run_dir, "samples", f"epoch_{epoch:03d}.png")
@@ -271,6 +337,8 @@ def main():
             "best_psnr": best_psnr,
             "config": cfg,
         }
+        if hasattr(scaler, "state_dict"):
+            ckpt["scaler_state"] = scaler.state_dict()
         last_path = os.path.join(run_dir, "checkpoints", "last.pth")
         torch.save(ckpt, last_path)
 

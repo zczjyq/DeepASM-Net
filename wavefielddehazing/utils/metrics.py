@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 def psnr(pred: torch.Tensor, target: torch.Tensor, eps: float = 1.0e-8) -> torch.Tensor:
     mse = F.mse_loss(pred, target, reduction="none").mean(dim=(1, 2, 3))
-    psnr_val = 10.0 * torch.log10(1.0 / (mse + eps))
+    psnr_val = 10.0 * torch.log10(1.0 / (mse))
     return psnr_val.mean()
 
 
