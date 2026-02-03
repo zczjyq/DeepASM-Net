@@ -11,7 +11,7 @@ git status 看一下没东西说明成功了
 # 建议使用和你 GitHub 账号一致的邮箱和用户名
 git config --global user.email "你的邮箱@example.com"
 git config --global user.name "你的名字"
-git push --set-upstream origin master
+git push --set-upstream origin main
 
 
 注意配置.gitignore
