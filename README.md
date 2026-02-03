@@ -1,8 +1,9 @@
-先执行 git remote add origin https://github.com/你的用户名/仓库名.git
-
+先执行 git clone https://github.com/zczjyq/DeepASM-Net.git
+cd DeepASM-Net
 
 
 注意配置.gitignore
+.gitignore 在仓库里面有
 
 
 下载更新,git pull
