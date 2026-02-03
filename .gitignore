@@ -1,0 +1,52 @@
+# --- 机器学习与深度学习相关 ---
+# 屏蔽预训练权重和模型文件（非常重要，这些文件通常很大）
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.weights
+*.h5
+/models/
+/checkpoints/
+
+# 屏蔽数据集文件夹（建议将数据放在名为 data 的文件夹里，然后屏蔽它）
+/data/
+/datasets/
+/test_results/
+/output/
+
+# --- Python 环境与缓存 ---
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+.ipynb_checkpoints/
+
+# --- C++ 编译文件 ---
+# 如果你在做 C++ 优化或运行相关工具，屏蔽编译产物
+*.o
+*.obj
+*.exe
+*.so
+*.dll
+*.lib
+/bin/
+/build/
+/cmake-build-debug/
+/cmake-build-release/
+
+# --- 操作系统与 IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.log
+
+# --- 其他 ---
+/dist/
+/node_modules/

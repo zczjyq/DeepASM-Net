@@ -1,0 +1,76 @@
+<html>
+    <head>
+        <title>First Fluid Simulation</title>
+        <style>
+            canvas {display: block; margin: 20px auto;}
+            body {background: #242321;}
+        </style>
+    </head>
+    <body>
+        <canvas id="canvas" width="1280" height="720" style="border: 1px solid black;"></canvas>
+        <script src="Simulation.js"></script>
+        <script src="Playground.js"></script>
+        <script src="Vector2.js"></script>
+        <script src="DrawUtils.js"></script>
+        <script src="Particle.js"></script>
+        <script src="FluidHashGrid.js"></script>
+        <script src="Particleemitter.js"></script>
+    
+        <script>
+            var canvas = document.getElementById("canvas");
+            var ctx = canvas.getContext("2d");
+
+            let lastTime = performance.now();
+            let currentTime = 0;
+            let deltaTime = 0;
+
+            let playground = new Playground();
+
+            mainLoop();
+
+            function updatePlayground(dt) {
+                Clear();
+                playground.update(dt);
+                playground.draw();
+            }
+
+            function mainLoop() {
+                window.requestAnimationFrame(mainLoop);
+
+                currentTime = performance.now();
+                deltaTime = (currentTime - lastTime) / 1000;
+
+                updatePlayground(deltaTime);
+                lastTime = currentTime;
+            }
+
+            function Clear () {
+                ctx.fillStyle = "#242321";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            function getMousePos(canvas, evt) {
+                var rect = canvas.getBoundingClientRect();
+                return {
+                    x: evt.clientX - rect.left,
+                    y: evt.clientY - rect.top
+                };
+            }
+
+            canvas.addEventListener('mousemove', function(evt) {
+                let mouse = getMousePos(canvas, evt);
+                playground.onMouseMove(new Vector2(mouse.x, mouse.y));
+            }, false)
+
+            canvas.addEventListener('mousedown', function(evt) {
+                playground.onMouseDown(evt.button);
+            }, false)
+
+            canvas.addEventListener('mouseup', function(evt) {
+                playground.onMouseUp(evt.button);
+            }, false)
+        </script>
+    </body>
+
+
+</html>

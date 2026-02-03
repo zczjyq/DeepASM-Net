@@ -1,0 +1,77 @@
+seed: 123
+
+paths:
+  root: D:/Desktop/毕业论文/code/data
+  hazy_dir: RESIDE-IN/train/hazy
+  clean_dir: RESIDE-IN/train/GT
+  use_legacy_hazy_clear: false
+  auto_discover_in_gt: true
+  # RESIDE-IN 等数据集：按文件名配对。可添加多个
+  datasets:
+    - type: same_name
+      hazy_dir: RESIDE-IN/train/hazy
+      clean_dir: RESIDE-IN/train/GT
+
+
+split:
+  train_ratio: 0.85
+  shuffle: true
+
+loader:
+  batch_size: 4
+  val_batch_size: 2
+  num_workers: 4
+  pin_memory: true
+
+transforms:
+  image_size: 256
+  random_flip: true
+
+model:
+  num_layers: 10
+  share_weights: false
+  use_skip_fusion: true   # U-Net 式结构，ABlock 间带 SK Fusion 跳跃连接
+  use_norm: true
+  wavelengths: [0.65, 0.53, 0.47]
+  z_max: 0.3
+  amp_mode: identity
+  output_mode: abs
+  mix_hidden: 64
+  phase_module:
+    hidden: 32
+    num_layers: 2
+    use_channel_residual: true
+    phase_residual_scale: 0.6
+  z_module:
+    hidden: 32
+    num_layers: 2
+  color_corrector:
+    enabled: true
+    hidden: 32
+
+train:
+  epochs: 100
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  cosine_tmax: 100
+  warmup_epochs: 5
+  grad_clip: 1.0
+  amp: true
+  log_interval: 50
+  fixed_val_samples: 12
+
+loss:
+  l1: 1.0
+  ssim: 0.1
+  perceptual: 0.02
+  color: 0.3
+  luma: 0.3
+  edge: 0.02
+  saturation: 0.5
+  z_reg: 0.0
+  phase_tv: 0.01
+  perceptual_layers: [3, 8, 15]
+
+output:
+  runs_dir: ./runs
+  outputs_dir: ./outputs

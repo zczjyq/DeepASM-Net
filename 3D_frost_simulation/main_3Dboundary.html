@@ -1,0 +1,1732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D 欧拉烟雾模拟 - 全参数增强版（修正版 + 连续透明导出 + 22帧 + 缩放倍率 + 参数命名 + 3D球谐边界拟合 + 边界线框）</title>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #050000; font-family: 'Segoe UI', system-ui, sans-serif; }
+    #controls-panel {
+      position: absolute; top: 20px; right: 20px;
+      background: rgba(15, 15, 15, 0.9);
+      padding: 20px; border-radius: 12px; color: white;
+      width: 320px; border: 1px solid rgba(255,255,255,0.1);
+      backdrop-filter: blur(15px);
+      display: flex; flex-direction: column; gap: 10px;
+      max-height: 90vh; overflow-y: auto; z-index: 100;
+    }
+    .control-group { display: flex; flex-direction: column; gap: 4px; }
+    .control-group label { font-size: 0.75em; opacity: 0.7; display: flex; justify-content: space-between; gap: 8px; }
+    .control-group input[type="range"] { width: 100%; cursor: pointer; }
+    .control-group input[type="number"], .control-group select, .control-group textarea {
+      background: rgba(0,0,0,0.4); border: 1px solid #444; color: #fff;
+      padding: 5px; border-radius: 4px; font-size: 0.85em; outline: none;
+    }
+    .control-group textarea { min-height: 110px; resize: vertical; line-height: 1.3; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    button {
+      cursor: pointer; background: #dc2626; font-weight: bold; border: none;
+      color: white; padding: 10px; border-radius: 6px; font-size: 0.85em; transition: background 0.2s;
+    }
+    button:hover { background: #b91c1c; }
+    button.secondary { background: #444; }
+    button.secondary:hover { background: #555; }
+    button.accent { background: #2563eb; }
+    button.accent:hover { background: #1d4ed8; }
+
+    #debug-stats {
+      position: absolute; bottom: 20px; left: 20px; background: rgba(0, 0, 0, 0.8);
+      color: #0f0; padding: 12px; font-family: 'Consolas', monospace; font-size: 11px;
+      border-radius: 6px; border: 1px solid #0f0; pointer-events: none;
+      min-width: 260px;
+    }
+    .hint { position: absolute; bottom: 20px; right: 350px; color: rgba(255,255,255,0.5); font-size: 0.8em; pointer-events: none; }
+    #status-msg { font-size: 0.7em; color: #facc15; margin: 4px 0; text-align: center; display: none; }
+
+    .mini-note { font-size: 0.72em; opacity: 0.7; line-height: 1.25; }
+    .pill {
+      display: inline-block; padding: 2px 6px; border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06);
+      font-size: 0.72em; opacity: 0.85;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="debug-stats">
+    状态: <span id="val-status">运行中</span><br>
+    当前分辨率: <span id="val-curr-res">32³</span><br>
+    计算耗时: <span id="val-ms">0</span> ms/step<br>
+    密度峰值: <span id="val-max-d">0.0</span><br>
+    缩放倍率: <span id="val-zoom">1.00x</span><br>
+    边界模式: <span id="val-boundary">内窥镜</span>
+  </div>
+
+  <div class="hint">左键旋转视角 | 滚轮缩放（看左下角倍率） | WSAD / ↑↓←→ 平移雾团</div>
+
+  <div id="controls-panel">
+    <div class="control-group">
+      <label>计算网格分辨率 (Grid Res) <span>⚠️重置物理场</span></label>
+      <select id="inp-res">
+        <option value="16" selected>16 x 16 x 16 (极速)</option>
+        <option value="32" >32 x 32 x 32 (标准)</option>
+        <option value="48">48 x 48 x 48 (精细)</option>
+        <option value="64">64 x 64 x 64 (高精-需强力CPU)</option>
+      </select>
+    </div>
+
+    <hr style="opacity:0.1; border:none; border-top:1px solid #fff;">
+
+    <div class="control-group">
+      <label>显示边界线框 <span class="pill">新增</span></label>
+      <label style="opacity:1; font-size:0.82em; justify-content:flex-start; gap:8px;">
+        <input type="checkbox" id="inp-show-boundary" checked style="transform:translateY(1px);">
+        <span>显示白色边界线（内窥镜：立方体；内腔：3D线框）</span>
+      </label>
+    </div>
+
+    <hr style="opacity:0.1; border:none; border-top:1px solid #fff;">
+
+    <div class="control-group">
+      <label>边界模式 <span class="pill">新增</span></label>
+      <select id="inp-boundary-mode">
+        <option value="endoscope" selected>内窥镜边界法（原始盒子边界）</option>
+        <option value="cavity">内腔边界法（3D 点拟合封闭边界）</option>
+      </select>
+      <div class="mini-note">
+        3D 点范围建议：x,y,z ∈ [-0.5, 0.5]（以雾团中心为原点）。<br>
+        建议 30~120 个点，尽量覆盖不同方向（更稳定）。<br>
+        每行格式：<code>x,y,z</code> 或 <code>x y z</code>
+      </div>
+    </div>
+
+    <div id="cavity-panel" style="display:none;">
+      <div class="control-group">
+        <label>内腔边界点列表（每行 x,y,z）<span id="lbl-fit-state" class="pill">未拟合</span></label>
+        <textarea id="inp-cavity-points" spellcheck="false">0.360, 0.000, 0.000
+0.339, 0.086, 0.000
+0.279, 0.166, 0.000
+0.186, 0.226, 0.000
+0.074, 0.255, 0.000
+-0.046, 0.252, 0.000
+-0.160, 0.217, 0.000
+-0.254, 0.156, 0.000
+-0.315, 0.080, 0.000
+-0.334,-0.004, 0.000
+-0.306,-0.085, 0.000
+-0.235,-0.156, 0.000
+-0.134,-0.205, 0.000
+-0.020,-0.223, 0.000
+0.095,-0.204, 0.000
+0.200,-0.152, 0.000
+0.282,-0.077, 0.000
+0.332, 0.007, 0.000
+
+0.290, 0.000, 0.170
+0.270, 0.090, 0.165
+0.213, 0.168, 0.155
+0.124, 0.224, 0.140
+0.017, 0.249, 0.125
+-0.097, 0.240, 0.115
+-0.205, 0.200, 0.120
+-0.290, 0.134, 0.135
+-0.340, 0.050, 0.150
+-0.345,-0.038, 0.160
+-0.305,-0.120, 0.165
+-0.224,-0.184, 0.160
+-0.115,-0.220, 0.145
+0.005,-0.222, 0.130
+0.125,-0.191, 0.120
+0.232,-0.132, 0.125
+0.310,-0.055, 0.140
+0.350, 0.030, 0.155
+
+0.250, 0.000,-0.210
+0.230, 0.092,-0.200
+0.176, 0.168,-0.185
+0.095, 0.218,-0.170
+-0.005, 0.235,-0.160
+-0.112, 0.216,-0.150
+-0.212, 0.166,-0.155
+-0.290, 0.095,-0.170
+-0.335, 0.010,-0.185
+-0.330,-0.078,-0.200
+-0.280,-0.150,-0.210
+-0.195,-0.196,-0.205
+-0.085,-0.212,-0.190
+0.035,-0.198,-0.175
+0.150,-0.155,-0.165
+0.245,-0.090,-0.175
+0.312,-0.010,-0.190
+0.335, 0.075,-0.205
+
+0.120, 0.300, 0.060
+-0.020, 0.330, 0.080
+-0.160, 0.290, 0.090
+-0.250, 0.220, 0.060
+-0.270, 0.140, 0.000
+-0.230, 0.070,-0.060
+-0.130, 0.040,-0.090
+0.010, 0.060,-0.080
+0.140, 0.120,-0.050
+0.220, 0.200, 0.000
+0.240, 0.260, 0.050
+0.190, 0.290, 0.090
+
+0.090,-0.280, 0.070
+-0.040,-0.310, 0.090
+-0.170,-0.270, 0.095
+-0.255,-0.200, 0.060
+-0.270,-0.120, 0.000
+-0.230,-0.060,-0.060
+-0.130,-0.050,-0.090
+0.010,-0.070,-0.080
+0.140,-0.130,-0.050
+0.220,-0.200, 0.000
+0.230,-0.240, 0.050
+0.170,-0.270, 0.090</textarea>
+        <div class="mini-note">
+          建议点半径 > 0.08；点分布尽量覆盖不同方向。<br>
+          该版本固定球谐阶数 L=3 + 强正则 + 拟合 log(r)，稳定性大幅提升。
+        </div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-fit-cavity" class="accent" style="font-size:0.8em;">确认并拟合 3D 边界</button>
+        <button id="btn-reset-cavity" class="secondary" style="font-size:0.8em;">恢复为内窥镜边界</button>
+      </div>
+    </div>
+
+    <hr style="opacity:0.1; border:none; border-top:1px solid #fff;">
+
+    <div class="control-group">
+      <label>涡流增强 (Vorticity) <span id="lbl-vort">5.00</span></label>
+      <input type="range" id="inp-vort" min="0" max="10" step="0.1" value="5">
+    </div>
+    <div class="control-group">
+      <label>垂直浮力 (Rising) <span id="lbl-buoyancy">0.60</span></label>
+      <input type="range" id="inp-buoyancy" min="0" max="1" step="0.01" value="0.6">
+    </div>
+    <div class="control-group">
+      <label>横向扩散 (Diffusion) <span id="lbl-diff">0.00</span></label>
+      <input type="range" id="inp-diff" min="0" max="1" step="0.01" value="0.0">
+    </div>
+    <div class="control-group">
+      <label>空气扰动 (Turbulence) <span id="lbl-turb">0.90</span></label>
+      <input type="range" id="inp-turb" min="0" max="2" step="0.05" value="0.90">
+    </div>
+    <div class="control-group">
+      <label>切割强度 (Source) <span id="lbl-source">10.70</span></label>
+      <input type="range" id="inp-source" min="1" max="50" step="0.1" value="10.70">
+    </div>
+    <div class="control-group">
+      <label>烟雾存留度 <span id="lbl-fade">0.9990</span></label>
+      <input type="range" id="inp-fade" min="0.95" max="1.0" step="0.0001" value="0.9990">
+    </div>
+
+    <div class="control-group">
+      <label>压力迭代次数 (Pressure Iters) <span id="lbl-piters">20</span></label>
+      <input type="range" id="inp-piters" min="2" max="80" step="1" value="20">
+    </div>
+
+    <div class="control-group">
+      <label>可视化厚度 (Thickness) <span id="lbl-opacity">0.03</span></label>
+      <input type="range" id="inp-opacity" min="0.0" max="0.6" step="0.01" value="0.03">
+    </div>
+
+    <hr style="opacity:0.1; border:none; border-top:1px solid #fff;">
+
+    <div class="control-group">
+      <label>脱机批量步数</label>
+      <input type="number" id="inp-batch-steps" value="100" min="1" max="2000">
+      <button id="btn-run-batch" class="accent">执行脱机批量计算</button>
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-pause" class="secondary">暂停模拟</button>
+      <button id="btn-reset">重置物理场</button>
+    </div>
+
+    <div class="btn-row" style="margin-top:5px;">
+      <button id="btn-reset-view" class="secondary" style="font-size:0.8em;">视角回到初始</button>
+      <button id="btn-center-fog" class="secondary" style="font-size:0.8em;">雾团回到中心</button>
+    </div>
+
+    <hr style="opacity:0.1; border:none; border-top:1px solid #fff;">
+
+    <div class="control-group">
+      <label>颜色</label>
+      <input type="color" id="inp-color" value="#ffffff"
+             style="width:100%; height:30px; border:none; background:none; cursor:pointer;">
+    </div>
+
+    <div class="btn-row" style="margin-top:5px;">
+      <button id="btn-export" class="secondary" style="font-size:0.7em;">导出 JSON</button>
+      <button id="btn-import-trigger" class="secondary" style="font-size:0.7em;">导入 JSON</button>
+    </div>
+    <input type="file" id="inp-import" accept=".json" style="display: none;">
+
+    <button id="btn-capture" style="background: #22c55e; margin-top:5px;">获取透明投影快照</button>
+    <button id="btn-burst-22" class="accent" style="margin-top:5px;">一次性保存 22 帧（1 秒）</button>
+
+    <div class="btn-row" style="margin-top:5px;">
+      <button id="btn-start-rec" class="accent" style="font-size:0.8em;">开始连续保存(22fps)</button>
+      <button id="btn-stop-rec" class="secondary" style="font-size:0.8em;" disabled>停止保存</button>
+    </div>
+
+    <div id="status-msg">状态已更新</div>
+  </div>
+
+  <script type="x-shader/x-vertex" id="vertexShader">
+    varying vec3 vOrigin;
+    varying vec3 vDirection;
+    uniform mat4 uInverseModelMatrix;
+    void main() {
+      vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+      vOrigin = (uInverseModelMatrix * vec4(cameraPosition, 1.0)).xyz;
+      vDirection = position - vOrigin;
+      gl_Position = projectionMatrix * viewMatrix * worldPosition;
+    }
+  </script>
+
+  <script type="x-shader/x-fragment" id="fragmentShader">
+    precision highp float;
+    precision highp sampler3D;
+
+    varying vec3 vOrigin;
+    varying vec3 vDirection;
+
+    uniform sampler3D uDensity;
+    uniform vec3 uBaseColor;
+    uniform float uOpacity;
+
+    vec2 hitBox(vec3 orig, vec3 dir) {
+      vec3 boxMin = vec3(-0.5);
+      vec3 boxMax = vec3(0.5);
+      vec3 invDir = 1.0 / dir;
+      vec3 tmin_tmp = (boxMin - orig) * invDir;
+      vec3 tmax_tmp = (boxMax - orig) * invDir;
+      vec3 tmin = min(tmin_tmp, tmax_tmp);
+      vec3 tmax = max(tmin_tmp, tmax_tmp);
+      float t0 = max(tmin.x, max(tmin.y, tmin.z));
+      float t1 = min(tmax.x, min(tmax.y, tmax.z));
+      return vec2(t0, t1);
+    }
+
+    void main() {
+      vec3 rayDir = normalize(vDirection);
+      vec2 bounds = hitBox(vOrigin, rayDir);
+      if (bounds.x > bounds.y || bounds.y < 0.0) discard;
+
+      float t = max(0.0, bounds.x);
+      float tMax = bounds.y;
+
+      vec4 sum = vec4(0.0);
+      const int steps = 90;
+      float stepSize = (tMax - t) / float(steps);
+
+      for (int i = 0; i < steps; i++) {
+        vec3 pos = vOrigin + rayDir * t;
+        vec3 texCoord = pos + 0.5;
+        float d = texture(uDensity, texCoord).r;
+
+        if (d > 0.0001) {
+          float alpha = smoothstep(0.0, 0.5, d) * uOpacity * stepSize * 45.0;
+          vec4 color = vec4(uBaseColor + d * 0.1, alpha);
+          color.rgb *= color.a;
+          sum += color * (1.0 - sum.a);
+        }
+        t += stepSize;
+        if (sum.a >= 0.98) break;
+      }
+
+      if (sum.a < 0.005) discard;
+      gl_FragColor = sum;
+    }
+  </script>
+
+  <script>
+    // ==========================================
+    // 3D 球谐拟合（修复版：L=3 + ridge强正则 + 拟合 log(r)）
+    // ==========================================
+    const SH_L = 3;
+    const RIDGE_LAMBDA = 1e-2;
+
+    function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+    function parsePointsText3D(text) {
+      const lines = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      const pts = [];
+      for (const ln of lines) {
+        const m = ln.split(/[\s,]+/).map(x => x.trim()).filter(Boolean);
+        if (m.length < 3) continue;
+        const x = parseFloat(m[0]);
+        const y = parseFloat(m[1]);
+        const z = parseFloat(m[2]);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        pts.push({x, y, z});
+      }
+      return pts;
+    }
+
+    function solveLinearSystem(A, b) {
+      const n = A.length;
+      const M = Array.from({length:n}, (_, i) => A[i].slice().concat([b[i]]));
+      for (let col = 0; col < n; col++) {
+        let pivot = col;
+        for (let r = col + 1; r < n; r++) {
+          if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+        }
+        if (Math.abs(M[pivot][col]) < 1e-12) return null;
+        if (pivot !== col) { const tmp = M[col]; M[col] = M[pivot]; M[pivot] = tmp; }
+
+        const div = M[col][col];
+        for (let c = col; c <= n; c++) M[col][c] /= div;
+
+        for (let r = 0; r < n; r++) {
+          if (r === col) continue;
+          const factor = M[r][col];
+          if (Math.abs(factor) < 1e-12) continue;
+          for (let c = col; c <= n; c++) M[r][c] -= factor * M[col][c];
+        }
+      }
+      return M.map(row => row[n]);
+    }
+
+    // Associated Legendre P_l^m(x), l<=L
+    function legendreTable(L, x) {
+      const P = Array.from({length: L+1}, () => Array(L+1).fill(0));
+      P[0][0] = 1.0;
+      if (L === 0) return P;
+
+      const sqrt1mx2 = Math.sqrt(Math.max(0, 1 - x*x));
+      for (let m = 1; m <= L; m++) {
+        P[m][m] = -(2*m - 1) * sqrt1mx2 * P[m-1][m-1];
+      }
+      for (let m = 0; m < L; m++) {
+        P[m+1][m] = (2*m + 1) * x * P[m][m];
+      }
+      for (let m = 0; m <= L; m++) {
+        for (let l = m + 2; l <= L; l++) {
+          P[l][m] = ((2*l - 1) * x * P[l-1][m] - (l + m - 1) * P[l-2][m]) / (l - m);
+        }
+      }
+      return P;
+    }
+
+    // Real SH basis（固定排列，总数 (L+1)^2）
+    function basisSize(L) { return (L + 1) * (L + 1); }
+
+    function buildRealSHBasis(L, theta, phi) {
+      const x = Math.cos(phi);
+      const P = legendreTable(L, x);
+      const b = [];
+      for (let l = 0; l <= L; l++) {
+        b.push(P[l][0]);
+        for (let m = 1; m <= l; m++) {
+          const plm = P[l][m];
+          b.push(plm * Math.cos(m * theta));
+          b.push(plm * Math.sin(m * theta));
+        }
+      }
+      return b;
+    }
+
+    function fitSphericalHarmonicBoundary(points3D, L = SH_L) {
+      // 只保留“表面点”假设：点应在壳体上，半径不能太小
+      const samples = [];
+      let minR = Infinity, maxR = -Infinity;
+
+      for (const p of points3D) {
+        const r = Math.sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+        if (r < 0.08) continue; // 太靠近原点的不参与拟合（稳定性关键）
+        const theta = Math.atan2(p.z, p.x);
+        const phi = Math.acos(clamp(p.y / r, -1, 1));
+        samples.push({theta, phi, r});
+        minR = Math.min(minR, r);
+        maxR = Math.max(maxR, r);
+      }
+
+      const M = basisSize(L);
+      if (samples.length < Math.max(30, M + 10)) return null;
+
+      // 拟合 log(r)：更稳且保证正半径
+      const XtX = Array.from({length: M}, () => Array(M).fill(0));
+      const Xty = Array(M).fill(0);
+
+      for (const s of samples) {
+        const row = buildRealSHBasis(L, s.theta, s.phi);
+        const y = Math.log(s.r);
+
+        for (let i = 0; i < M; i++) {
+          Xty[i] += row[i] * y;
+          for (let j = 0; j < M; j++) XtX[i][j] += row[i] * row[j];
+        }
+      }
+
+      // ridge 正则
+      for (let i = 0; i < M; i++) XtX[i][i] += RIDGE_LAMBDA;
+
+      const coeff = solveLinearSystem(XtX, Xty);
+      if (!coeff) return null;
+
+      // 合理 clamp（防止拟合过小/过大）
+      const clampMin = Math.max(0.06, minR * 0.75);
+      const clampMax = Math.min(0.75, maxR * 1.25);
+
+      const logMin = Math.log(clampMin);
+      const logMax = Math.log(clampMax);
+
+            function rFit(theta, phi) {
+        const row = buildRealSHBasis(L, theta, phi);
+        let y = 0.0;
+        for (let i = 0; i < M; i++) y += coeff[i] * row[i];
+
+        // 对 log(r) 做 clamp，再 exp 回 r
+        y = clamp(y, logMin, logMax);
+        const r = Math.exp(y);
+        return clamp(r, clampMin, clampMax);
+      }
+
+      return { L, coeff, rFit, n: samples.length, minR: clampMin, maxR: clampMax };
+    }
+
+/**
+       * 根据3D拟合结果创建一个边界检查函数
+       * @param {Object} fitObj - 包含球谐拟合参数（L阶数, 系数coeff等）和拟合函数rFit的对象
+       * @returns {Function} 返回一个接收 (x, y, z) 坐标并返回布尔值的判定函数
+       */
+       function makeCavityCheckFromFit3D(fitObj) {
+        
+        /**
+         * 闭包函数：判定点 (x, y, z) 是否在拟合的边界内部
+         * @param {number} x, y, z - 归一化后的空间坐标，通常范围在 [-0.5, 0.5]
+         */
+        return function check(x, y, z) {
+          // 1. 计算当前点到中心原点 (0,0,0) 的欧几里得距离（极径 r）
+          const rr = Math.sqrt(x * x + y * y + z * z);
+          
+          // 2. 容错处理：如果点几乎就在原点上，直接判定为在内部（防止除以0导致的计算错误）
+          if (rr < 1e-8) return true;
+          
+          // 3. 坐标转换：将直角坐标 (x, y, z) 转换为球坐标系下的角度
+          // theta (方位角)：在 XZ 平面上的角度，范围通常是 [-π, π]
+          const theta = Math.atan2(z, x);
+          
+          // phi (仰角/极角)：与 Y 轴（垂直轴）的夹角，范围 [0, π]
+          // 使用 clamp 确保比值在 [-1, 1] 之间，防止 acos 出现 NaN
+          const phi = Math.acos(clamp(y / rr, -1, 1));
+          
+          // 4. 计算边界限制：
+          // 根据当前的旋转角度 (theta, phi)，调用拟合好的球谐函数模型，
+          // 计算出在该方向上，拟合表面距离原点的理论半径 bound。
+          const bound = fitObj.rFit(theta, phi);
+          
+          // 5. 最终判定：
+          // 如果当前点到原点的距离 rr 小于或等于 该方向的理论边界半径 bound，
+          // 则说明该点在“内腔”边界内部，返回 true。
+          return rr <= bound;
+        };
+      }
+
+    // ==========================================
+    // 原始主体：你的模拟器（只加了 cavity 模式的 inside 截断 + 源点注入容错）
+    // ==========================================
+    class FluidSolver3D {
+      constructor(res) {
+        this.res = res;
+        this.size = res * res * res;
+
+        this.dt = 0.1;
+
+        this.vorticity = 2.0;
+        this.buoyancy = 10.30;
+        this.fadeRate = 0.999;
+        this.diffusion = 0.40;
+        this.sourceIntensity = 10.0;
+        this.turbulence = 0.8;
+        this.absorption = 0.3;
+
+        this.pressureIters = 20;
+
+        this.density = new Float32Array(this.size);
+        this.temp    = new Float32Array(this.size);
+
+        this.u = new Float32Array(this.size);
+        this.v = new Float32Array(this.size);
+        this.w = new Float32Array(this.size);
+
+        this.uOld = new Float32Array(this.size);
+        this.vOld = new Float32Array(this.size);
+        this.wOld = new Float32Array(this.size);
+
+        this.dOld = new Float32Array(this.size);
+        this.tOld = new Float32Array(this.size);
+
+        this.curlX   = new Float32Array(this.size);
+        this.curlY   = new Float32Array(this.size);
+        this.curlZ   = new Float32Array(this.size);
+        this.curlMag = new Float32Array(this.size);
+
+        this.boundaryMode = "endoscope";
+        this.boundaryFit = null;
+        this.check = (x, y, z) => true;
+
+        // 新增：注入源点定位缓存（避免每步都搜）
+        this._cachedSourceXYZ = null;
+      }
+
+      setBoundaryMode(mode, fitObj = null) {
+        this.boundaryMode = mode;
+        this.boundaryFit = fitObj || null;
+        if (mode === "cavity" && fitObj) {
+          this.check = makeCavityCheckFromFit3D(fitObj);
+        } else {
+          this.check = (x, y, z) => true;
+        }
+        // 切换边界后，重置源点缓存
+        this._cachedSourceXYZ = null;
+      }
+
+      idxToNorm(x, y, z) {
+        const r = this.res;
+        const nx = (x / (r - 1)) - 0.5;
+        const ny = (y / (r - 1)) - 0.5;
+        const nz = (z / (r - 1)) - 0.5;
+        return {nx, ny, nz};
+      }
+
+      isInsideCell(x, y, z) {
+        const r = this.res;
+        if (x < 0 || y < 0 || z < 0 || x >= r || y >= r || z >= r) return false;
+        const {nx, ny, nz} = this.idxToNorm(x, y, z);
+        return this.check(nx, ny, nz);
+      }
+
+      IX(x, y, z) {
+        const r = this.res;
+        x = x < 0 ? 0 : (x >= r ? r - 1 : x);
+        y = y < 0 ? 0 : (y >= r ? r - 1 : y);
+        z = z < 0 ? 0 : (z >= r ? r - 1 : z);
+        return x + y * r + z * r * r;
+      }
+
+      // === 修复：cavity 模式时，确保注入源点在边界内（找最近可用点） ===
+      _findValidSourceCell(defaultX, defaultY, defaultZ) {
+        const r = this.res;
+
+        // endoscope 模式直接用默认
+        if (this.boundaryMode !== "cavity") return {x: defaultX, y: defaultY, z: defaultZ};
+
+        // 如果缓存可用
+        if (this._cachedSourceXYZ) {
+          const {x, y, z} = this._cachedSourceXYZ;
+          if (this.isInsideCell(x, y, z)) return this._cachedSourceXYZ;
+          this._cachedSourceXYZ = null;
+        }
+
+        // 以默认点为中心，做小范围 3D 搜索（优先同一 xz，扫描 y）
+        const candidates = [];
+        const maxDy = Math.max(3, Math.floor(r * 0.15));
+        const maxDxy = 2;
+
+        for (let dy = 0; dy <= maxDy; dy++) {
+          for (const sy of [defaultY + dy, defaultY - dy]) {
+            if (sy < 0 || sy >= r) continue;
+            // 先尝试原 xz
+            if (this.isInsideCell(defaultX, sy, defaultZ)) {
+              const out = {x: defaultX, y: sy, z: defaultZ};
+              this._cachedSourceXYZ = out;
+              return out;
+            }
+            // 再尝试周围小范围
+            for (let dx = -maxDxy; dx <= maxDxy; dx++) {
+              for (let dz = -maxDxy; dz <= maxDxy; dz++) {
+                const xx = defaultX + dx;
+                const zz = defaultZ + dz;
+                if (xx < 0 || xx >= r || zz < 0 || zz >= r) continue;
+                if (this.isInsideCell(xx, sy, zz)) {
+                  const dist = Math.abs(dx) + Math.abs(dz) + Math.abs(sy - defaultY);
+                  candidates.push({dist, x: xx, y: sy, z: zz});
+                }
+              }
+            }
+          }
+          if (candidates.length) break; // 找到就停止扩大范围
+        }
+
+        if (candidates.length) {
+          candidates.sort((a, b) => a.dist - b.dist);
+          const best = {x: candidates[0].x, y: candidates[0].y, z: candidates[0].z};
+          this._cachedSourceXYZ = best;
+          return best;
+        }
+
+        // 找不到：退回默认（外面会导致不注入，但至少不崩）
+        return {x: defaultX, y: defaultY, z: defaultZ};
+      }
+
+      step() {
+        const r = this.res;
+        const mid = Math.floor(r / 2);
+
+        // === 注入源（修复：用 _findValidSourceCell 找到 inside 点） ===
+        const src0 = this._findValidSourceCell(mid, 1, mid);
+
+        for (let i = -1; i <= 1; i++) {
+          for (let j = -1; j <= 1; j++) {
+            const x = src0.x + i;
+            const y = src0.y;
+            const z = src0.z + j;
+            if (x < 0 || x >= r || z < 0 || z >= r) continue;
+            if (!this.isInsideCell(x, y, z)) continue;
+
+            const idx = this.IX(x, y, z);
+            this.density[idx] += this.sourceIntensity;
+            this.temp[idx] += 5.0;
+
+            if (this.turbulence > 0) {
+              this.u[idx] += (Math.random() - 0.5) * this.turbulence;
+              this.w[idx] += (Math.random() - 0.5) * this.turbulence;
+            }
+          }
+        }
+
+        if (this.vorticity > 0) { this.computeCurl(); this.applyVorticityForce(); }
+        console.log(this.buoyancy)
+        for (let i = 0; i < this.size; i++) { this.v[i] += (this.temp[i] * this.buoyancy * 0.05); }
+
+        this.uOld.set(this.u); this.vOld.set(this.v); this.wOld.set(this.w);
+        this.dOld.set(this.density); this.tOld.set(this.temp);
+
+        this.advect(1, this.u, this.uOld, this.uOld, this.vOld, this.wOld);
+        this.advect(2, this.v, this.vOld, this.uOld, this.vOld, this.wOld);
+        this.advect(3, this.w, this.wOld, this.uOld, this.vOld, this.wOld);
+
+        this.project(this.u, this.v, this.w, this.uOld, this.vOld);
+
+        if (this.diffusion > 0) {
+          this.diffuse(0, this.density, this.dOld, this.diffusion);
+          this.dOld.set(this.density);
+        }
+
+        this.advect(0, this.density, this.dOld, this.u, this.v, this.w);
+        this.advect(0, this.temp, this.tOld, this.u, this.v, this.w);
+
+        const factor = 1.0 - this.absorption;
+        for (let z = 0; z < r; z++) {
+          for (let y = 0; y < r; y++) {
+            for (let x = 0; x < r; x++) {
+              const idx = x + y * r + z * r * r;
+
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) {
+                this.density[idx] = 0;
+                this.temp[idx] = 0;
+                this.u[idx] = 0; this.v[idx] = 0; this.w[idx] = 0;
+                continue;
+              }
+
+              if (x === 0 || x === r - 1 || y === 0 || y === r - 1 || z === 0 || z === r - 1) this.density[idx] *= factor;
+              this.density[idx] *= this.fadeRate;
+              this.temp[idx] *= 0.95;
+            }
+          }
+        }
+      }
+
+/**
+       * 计算速度场的旋度 (Curl)
+       * 用于衡量流体在各个网格点上的旋转程度
+       */
+       computeCurl() {
+        const r = this.res;
+        
+        // 遍历 3D 网格内部节点 (1 到 r-2)，避开最外层边界
+        for (let z = 1; z < r - 1; z++) {
+          for (let y = 1; y < r - 1; y++) {
+            for (let x = 1; x < r - 1; x++) {
+              
+              // 边界检查：如果处于“内腔模式”且当前点不在物理边界内，则跳过计算
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) continue;
+              
+              // 获取当前中心点的索引
+              const idx = this.IX(x, y, z);
+
+              // 使用中心差分法计算各个方向的速度分量偏导数：
+              
+              // 1. 计算 X 方向旋度分量的基础偏导：
+              // dw/dy (Z轴速度随Y的变化率) 和 dv/dz (Y轴速度随Z的变化率)
+              const dw_dy = (this.w[this.IX(x, y + 1, z)] - this.w[this.IX(x, y - 1, z)]) * 0.5;
+              const dv_dz = (this.v[this.IX(x, y, z + 1)] - this.v[this.IX(x, y, z - 1)]) * 0.5;
+
+              // 2. 计算 Y 方向旋度分量的基础偏导：
+              // du/dz (X轴速度随Z的变化率) 和 dw/dx (Z轴速度随X的变化率)
+              const du_dz = (this.u[this.IX(x, y, z + 1)] - this.u[this.IX(x, y, z - 1)]) * 0.5;
+              const dw_dx = (this.w[this.IX(x + 1, y, z)] - this.w[this.IX(x - 1, y, z)]) * 0.5;
+
+              // 3. 计算 Z 方向旋度分量的基础偏导：
+              // dv/dx (Y轴速度随X的变化率) 和 du/dy (X轴速度随Y的变化率)
+              const dv_dx = (this.v[this.IX(x + 1, y, z)] - this.v[this.IX(x - 1, y, z)]) * 0.5;
+              const du_dy = (this.u[this.IX(x, y + 1, z)] - this.u[this.IX(x, y - 1, z)]) * 0.5;
+
+              // 根据数学公式 Curl(F) = ∇ × F 计算旋度的三个分量：
+              // cx = ∂w/∂y - ∂v/∂z
+              // cy = ∂u/∂z - ∂w/∂x
+              // cz = ∂v/∂x - ∂u/∂y
+              const cx = dw_dy - dv_dz;
+              const cy = du_dz - dw_dx;
+              const cz = dv_dx - du_dy;
+
+              // 将结果存储到旋度向量场中
+              this.curlX[idx] = cx;
+              this.curlY[idx] = cy;
+              this.curlZ[idx] = cz;
+
+              // 计算旋度的模长（Magnitude），代表该点旋转的总强度
+              this.curlMag[idx] = Math.sqrt(cx * cx + cy * cy + cz * cz);
+            }
+          }
+        }
+      }
+
+      applyVorticityForce() {
+        const r = this.res;
+        const eps = this.vorticity;
+
+        for (let z = 2; z < r - 2; z++) {
+          for (let y = 2; y < r - 2; y++) {
+            for (let x = 2; x < r - 2; x++) {
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) continue;
+              const idx = this.IX(x, y, z);
+
+              let nx = (this.curlMag[this.IX(x + 1, y, z)] - this.curlMag[this.IX(x - 1, y, z)]) * 0.5;
+              let ny = (this.curlMag[this.IX(x, y + 1, z)] - this.curlMag[this.IX(x, y - 1, z)]) * 0.5;
+              let nz = (this.curlMag[this.IX(x, y, z + 1)] - this.curlMag[this.IX(x, y, z - 1)]) * 0.5;
+
+              const mag = Math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-6;
+              nx /= mag; ny /= mag; nz /= mag;
+
+              const wx = this.curlX[idx], wy = this.curlY[idx], wz = this.curlZ[idx];
+              const fx = (ny * wz - nz * wy);
+              const fy = (nz * wx - nx * wz);
+              const fz = (nx * wy - ny * wx);
+
+              this.u[idx] += eps * fx * this.dt;
+              this.v[idx] += eps * fy * this.dt;
+              this.w[idx] += eps * fz * this.dt;
+            }
+          }
+        }
+      }
+
+/**
+       * 扩散处理函数 (使用 Gauss-Seidel 迭代法求解)
+       * @param {number} b - 边界处理标志 (虽然此代码段中未直接使用，但通常用于指定边界对齐方式)
+       * @param {Float32Array} x - 当前属性场 (如密度或温度)，迭代后的结果将存回此处
+       * @param {Float32Array} x0 - 上一个时间步的属性场源数据
+       * @param {number} diff - 扩散系数 (控制扩散的速度)
+       */
+       diffuse(b, x, x0, diff) {
+        const r = this.res;
+        
+        // 计算扩散常数 'a'
+        // 公式通常为: a = dt * diffusion_rate * grid_size_factor
+        // 注意：(r-2)*(r-2) 极大增强了扩散强度，分辨率越高，扩散越剧烈
+        const a = this.dt * diff * (r - 2);
+
+        // 进行 8 次 Gauss-Seidel 迭代
+        // 迭代次数越多，扩散计算越精确，但计算开销也越大
+        for (let n = 0; n < 8; n++) {
+          // 遍历 3D 网格的内部节点 (忽略最外层边界点)
+          for (let z = 1; z < r - 1; z++) {
+            for (let y = 1; y < r - 1; y++) {
+              for (let xIdx = 1; xIdx < r - 1; xIdx++) {
+                
+                // 边界检查：如果处于“内腔模式”且当前点在物理边界外，则跳过计算
+                if (this.boundaryMode === "cavity" && !this.isInsideCell(xIdx, y, z)) continue;
+                
+                // 获取当前网格在一维数组中的索引
+                const idx = this.IX(xIdx, y, z);
+
+                // 隐式求解核心公式：
+                // 当前点的值 = (初始值 + 扩散常数 * 6个邻居节点的当前值之和) / (1 + 6 * 扩散常数)
+                // 这实际上是在平衡当前点与其上下左右前后邻居的数值，使其平滑化
+                x[idx] = (x0[idx] + a * (
+                  x[this.IX(xIdx + 1, y, z)] + x[this.IX(xIdx - 1, y, z)] + // 左右邻居
+                  x[this.IX(xIdx, y + 1, z)] + x[this.IX(xIdx, y - 1, z)] + // 上下邻居
+                  x[this.IX(xIdx, y, z + 1)] + x[this.IX(xIdx, y, z - 1)]   // 前后邻居
+                )) / (1 + 6 * a);
+              }
+            }
+          }
+        }
+      }
+
+      advect(b, d, d0, u, v, w) {
+        const r = this.res;
+        const dt0 = this.dt * (r - 2);
+
+        for (let z = 1; z < r - 1; z++) {
+          for (let y = 1; y < r - 1; y++) {
+            for (let x = 1; x < r - 1; x++) {
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) {
+                d[this.IX(x, y, z)] = 0;
+                continue;
+              }
+
+              let px = x - dt0 * u[this.IX(x, y, z)];
+              let py = y - dt0 * v[this.IX(x, y, z)];
+              let pz = z - dt0 * w[this.IX(x, y, z)];
+
+              px = Math.max(0.5, Math.min(r - 1.5, px));
+              py = Math.max(0.5, Math.min(r - 1.5, py));
+              pz = Math.max(0.5, Math.min(r - 1.5, pz));
+
+              const x0 = Math.floor(px), x1 = x0 + 1;
+              const y0 = Math.floor(py), y1 = y0 + 1;
+              const z0 = Math.floor(pz), z1 = z0 + 1;
+
+              const sx1 = px - x0, sx0 = 1 - sx1;
+              const sy1 = py - y0, sy0 = 1 - sy1;
+              const sz1 = pz - z0, sz0 = 1 - sz1;
+
+              d[this.IX(x, y, z)] =
+                sx0 * (sy0 * (sz0 * d0[this.IX(x0, y0, z0)] + sz1 * d0[this.IX(x0, y0, z1)]) +
+                      sy1 * (sz0 * d0[this.IX(x0, y1, z0)] + sz1 * d0[this.IX(x0, y1, z1)])) +
+                sx1 * (sy0 * (sz0 * d0[this.IX(x1, y0, z0)] + sz1 * d0[this.IX(x1, y0, z1)]) +
+                      sy1 * (sz0 * d0[this.IX(x1, y1, z0)] + sz1 * d0[this.IX(x1, y1, z1)]));
+            }
+          }
+        }
+      }
+
+      project(u, v, w, p, div) {
+        const r = this.res;
+
+        for (let z = 1; z < r - 1; z++) {
+          for (let y = 1; y < r - 1; y++) {
+            for (let x = 1; x < r - 1; x++) {
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) continue;
+              const idx = this.IX(x, y, z);
+              const dudx = (u[this.IX(x + 1, y, z)] - u[this.IX(x - 1, y, z)]) * 0.5;
+              const dvdy = (v[this.IX(x, y + 1, z)] - v[this.IX(x, y - 1, z)]) * 0.5;
+              const dwdz = (w[this.IX(x, y, z + 1)] - w[this.IX(x, y, z - 1)]) * 0.5;
+
+              div[idx] = -(dudx + dvdy + dwdz) / r;
+              p[idx] = 0;
+            }
+          }
+        }
+
+        const iters = Math.max(2, this.pressureIters | 0);
+        for (let n = 0; n < iters; n++) {
+          for (let z = 1; z < r - 1; z++) {
+            for (let y = 1; y < r - 1; y++) {
+              for (let x = 1; x < r - 1; x++) {
+                if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) continue;
+                const idx = this.IX(x, y, z);
+                p[idx] = (div[idx] +
+                  p[this.IX(x + 1, y, z)] + p[this.IX(x - 1, y, z)] +
+                  p[this.IX(x, y + 1, z)] + p[this.IX(x, y - 1, z)] +
+                  p[this.IX(x, y, z + 1)] + p[this.IX(x, y, z - 1)]
+                ) / 6;
+              }
+            }
+          }
+        }
+
+        for (let z = 1; z < r - 1; z++) {
+          for (let y = 1; y < r - 1; y++) {
+            for (let x = 1; x < r - 1; x++) {
+              if (this.boundaryMode === "cavity" && !this.isInsideCell(x, y, z)) continue;
+              const idx = this.IX(x, y, z);
+              u[idx] -= 0.5 * r * (p[this.IX(x + 1, y, z)] - p[this.IX(x - 1, y, z)]);
+              v[idx] -= 0.5 * r * (p[this.IX(x, y + 1, z)] - p[this.IX(x, y - 1, z)]);
+              w[idx] -= 0.5 * r * (p[this.IX(x, y, z + 1)] - p[this.IX(x, y, z - 1)]);
+            }
+          }
+        }
+      }
+
+      reset() {
+        this.u.fill(0); this.v.fill(0); this.w.fill(0);
+        this.density.fill(0); this.temp.fill(0);
+      }
+
+      serialize() {
+        return JSON.stringify({
+          res: this.res,
+          d: Array.from(this.density),
+          u: Array.from(this.u),
+          v: Array.from(this.v),
+          w: Array.from(this.w),
+          t: Array.from(this.temp),
+          params: {
+            dt: this.dt,
+            vorticity: this.vorticity,
+            buoyancy: this.buoyancy,
+            fadeRate: this.fadeRate,
+            diffusion: this.diffusion,
+            sourceIntensity: this.sourceIntensity,
+            turbulence: this.turbulence,
+            absorption: this.absorption,
+            pressureIters: this.pressureIters
+          },
+          boundary: {
+            mode: this.boundaryMode,
+            fit: this.boundaryFit ? {
+              L: this.boundaryFit.L,
+              coeff: this.boundaryFit.coeff,
+              minR: this.boundaryFit.minR,
+              maxR: this.boundaryFit.maxR,
+              n: this.boundaryFit.n
+            } : null
+          }
+        });
+      }
+
+      deserialize(json) {
+        const data = JSON.parse(json);
+        if (data.d) this.density.set(data.d);
+        if (data.u) this.u.set(data.u);
+        if (data.v) this.v.set(data.v);
+        if (data.w) this.w.set(data.w);
+        if (data.t) this.temp.set(data.t);
+        if (data.params) Object.assign(this, data.params);
+
+        if (data.boundary && data.boundary.mode) {
+          if (data.boundary.mode === "cavity" && data.boundary.fit && data.boundary.fit.coeff) {
+            const L = data.boundary.fit.L;
+            const coeff = data.boundary.fit.coeff;
+            const minR = data.boundary.fit.minR;
+            const maxR = data.boundary.fit.maxR;
+
+            const logMin = Math.log(minR);
+            const logMax = Math.log(maxR);
+            const M = basisSize(L);
+
+            const fitObj = {
+              L, coeff, minR, maxR, n: data.boundary.fit.n,
+              rFit: (theta, phi) => {
+                const row = buildRealSHBasis(L, theta, phi);
+                let y = 0.0;
+                for (let i = 0; i < M; i++) y += coeff[i] * row[i];
+                y = clamp(y, logMin, logMax);
+                return clamp(Math.exp(y), minR, maxR);
+              }
+            };
+
+            this.setBoundaryMode("cavity", fitObj);
+          } else {
+            this.setBoundaryMode("endoscope");
+          }
+        } else {
+          this.setBoundaryMode("endoscope");
+        }
+      }
+    }
+
+    // ==========================================
+    // three.js 主体（保持你原功能）
+    // ==========================================
+    let scene, camera, renderer, fluid, densityTexture, material, mesh;
+    let GRID_RES = 32;
+
+    let boxWire = null;
+    let cavityWire = null;
+
+    // cavity 线框：经纬线参数
+    const CAVITY_THETA_SEGS = 120;
+    const CAVITY_PHI_SEGS   = 48;
+    const CAVITY_LONG_STEP  = 12;
+    const CAVITY_LAT_STEP   = 6;
+
+    let isDragging = false, previousMouseX = 0, previousMouseY = 0;
+
+    const INIT_ROT_X = 0;
+    const INIT_ROT_Y = 0.5;
+    const INIT_CAM_DIST = 1.3;
+
+    let rotationX = INIT_ROT_X, rotationY = INIT_ROT_Y, cameraDistance = INIT_CAM_DIST;
+    let isPaused = false;
+
+    // 连续保存透明 PNG（22fps）
+    let recTimer = null;
+    let recIndex = 1;
+    let recDirHandle = null;
+    const REC_FPS = 22;
+    const REC_INTERVAL_MS = Math.round(1000 / REC_FPS);
+    let isBursting = false;
+
+    async function ensureDirectoryHandle() {
+      if (!("showDirectoryPicker" in window)) return null;
+      if (recDirHandle) return recDirHandle;
+      recDirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+      return recDirHandle;
+    }
+
+    function dataURLToBlob(dataURL) {
+      const [head, body] = dataURL.split(",");
+      const mime = head.match(/:(.*?);/)[1];
+      const bin = atob(body);
+      const len = bin.length;
+      const arr = new Uint8Array(len);
+      for (let i = 0; i < len; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: mime });
+    }
+
+    async function savePngBlob(blob, filename) {
+      if (recDirHandle) {
+        const fileHandle = await recDirHandle.getFileHandle(filename, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 1000);
+    }
+
+    function num(v, digits) { return Number(v).toFixed(digits); }
+    function buildParamPrefix() {
+      const vor = num(fluid.vorticity, 2);
+      const buy = num(fluid.buoyancy, 2);
+      const dif = num(fluid.diffusion, 2);
+      const tur = num(fluid.turbulence, 2);
+      const src = num(fluid.sourceIntensity, 2);
+      const fad = num(fluid.fadeRate, 4);
+      const pit = String(fluid.pressureIters | 0);
+      const thk = num(material.uniforms.uOpacity.value, 2);
+      return `vor${vor}_buy${buy}_dif${dif}_tur${tur}_src${src}_fad${fad}_pit${pit}_thk${thk}`;
+    }
+
+    function getZoomValue() { return INIT_CAM_DIST / cameraDistance; }
+
+    async function captureOneFrameTransparentCustomName(prefix, frameIdx) {
+      renderer.setClearAlpha(0);
+      renderer.render(scene, camera);
+      const dataURL = renderer.domElement.toDataURL("image/png");
+      const blob = dataURLToBlob(dataURL);
+      const zoom = getZoomValue();
+      const filename = `${prefix}__zoom${zoom.toFixed(2)}__f${String(frameIdx).padStart(4, "0")}.png`;
+      await savePngBlob(blob, filename);
+    }
+
+    function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+    async function burstSave22Frames() {
+      if (isBursting) return;
+      isBursting = true;
+
+      const btn = document.getElementById("btn-burst-22");
+      const oldText = btn.innerText;
+      btn.disabled = true;
+      btn.innerText = "保存中...";
+
+      try {
+        try { recDirHandle = await ensureDirectoryHandle(); } catch { recDirHandle = null; }
+        const prefix = buildParamPrefix();
+        for (let i = 1; i <= 22; i++) {
+          await captureOneFrameTransparentCustomName(prefix, i);
+          await sleep(REC_INTERVAL_MS);
+        }
+        showStatus(`已保存 22 帧：${prefix}__zoom??__f0001~f0022`);
+      } catch (e) {
+        showStatus("保存失败（权限/存储）");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
+        isBursting = false;
+      }
+    }
+
+    // 键盘平移雾团
+    const keyState = Object.create(null);
+    const moveClock = new THREE.Clock();
+    const fogMoveSpeed = 0.55;
+    const fogMoveClamp = 0.75;
+
+    function isTypingTarget(el) {
+      if (!el) return false;
+      const tag = (el.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+    }
+
+    function setupKeyboard() {
+      window.addEventListener("keydown", (e) => {
+        if (isTypingTarget(document.activeElement)) return;
+        keyState[e.code] = true;
+      });
+      window.addEventListener("keyup", (e) => {
+        keyState[e.code] = false;
+      });
+      window.addEventListener("blur", () => {
+        for (const k in keyState) keyState[k] = false;
+      });
+    }
+
+    function applyFogKeyboardMove(dt) {
+      if (!mesh || !camera) return;
+
+      const left  = keyState["KeyA"] || keyState["ArrowLeft"];
+      const right = keyState["KeyD"] || keyState["ArrowRight"];
+      const up    = keyState["KeyW"] || keyState["ArrowUp"];
+      const down  = keyState["KeyS"] || keyState["ArrowDown"];
+
+      if (!left && !right && !up && !down) return;
+
+      const forward = new THREE.Vector3();
+      camera.getWorldDirection(forward);
+
+      const worldUp = new THREE.Vector3(0, 1, 0);
+      const rightVec = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+      const upVec = new THREE.Vector3().crossVectors(rightVec, forward).normalize();
+
+      const move = new THREE.Vector3();
+      if (left)  move.addScaledVector(rightVec, -1);
+      if (right) move.addScaledVector(rightVec, +1);
+      if (up)    move.addScaledVector(upVec, +1);
+      if (down)  move.addScaledVector(upVec, -1);
+
+      if (move.lengthSq() > 0) {
+        move.normalize().multiplyScalar(fogMoveSpeed * dt);
+        mesh.position.add(move);
+
+        mesh.position.x = Math.max(-fogMoveClamp, Math.min(fogMoveClamp, mesh.position.x));
+        mesh.position.y = Math.max(-fogMoveClamp, Math.min(fogMoveClamp, mesh.position.y));
+        mesh.position.z = Math.max(-fogMoveClamp, Math.min(fogMoveClamp, mesh.position.z));
+      }
+    }
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 100);
+      updateCameraPosition();
+
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('webgl2');
+      if (!context) { alert("浏览器不支持 WebGL2"); return; }
+
+      renderer = new THREE.WebGLRenderer({
+        canvas, context,
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true
+      });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setClearColor(0x000000, 0);
+      document.body.appendChild(renderer.domElement);
+
+      setupSimulator();
+      setupInteraction();
+      setupControls();
+      setupKeyboard();
+
+      window.addEventListener('resize', onResize);
+      animate();
+    }
+
+    function onResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function ensureBoxWire() {
+      if (boxWire) return boxWire;
+      const edges = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+      boxWire = new THREE.LineSegments(edges, mat);
+      boxWire.renderOrder = 999;
+      boxWire.frustumCulled = false;
+      scene.add(boxWire);
+      return boxWire;
+    }
+
+    function removeCavityWire() {
+      if (cavityWire) {
+        scene.remove(cavityWire);
+        cavityWire.geometry.dispose();
+        cavityWire.material.dispose();
+        cavityWire = null;
+      }
+    }
+
+    // cavity 线框：经纬线
+    function updateCavityWireFromFit(fitObj) {
+      removeCavityWire();
+      if (!fitObj) return;
+
+      const pos = [];
+      function addSeg(ax, ay, az, bx, by, bz) { pos.push(ax, ay, az, bx, by, bz); }
+
+      // 经线（固定 theta）
+      for (let tIdx = 0; tIdx < CAVITY_THETA_SEGS; tIdx += CAVITY_LONG_STEP) {
+        const theta = -Math.PI + (2 * Math.PI) * (tIdx / CAVITY_THETA_SEGS);
+        let prev = null;
+        for (let pIdx = 0; pIdx <= CAVITY_PHI_SEGS; pIdx++) {
+          const phi = (Math.PI) * (pIdx / CAVITY_PHI_SEGS);
+          const r = fitObj.rFit(theta, phi);
+          const x = r * Math.sin(phi) * Math.cos(theta);
+          const y = r * Math.cos(phi);
+          const z = r * Math.sin(phi) * Math.sin(theta);
+          if (prev) addSeg(prev.x, prev.y, prev.z, x, y, z);
+          prev = {x, y, z};
+        }
+      }
+
+      // 纬线（固定 phi）
+      for (let pIdx = 1; pIdx < CAVITY_PHI_SEGS; pIdx += CAVITY_LAT_STEP) {
+        const phi = (Math.PI) * (pIdx / CAVITY_PHI_SEGS);
+        let prev = null;
+        for (let tIdx = 0; tIdx <= CAVITY_THETA_SEGS; tIdx++) {
+          const theta = -Math.PI + (2 * Math.PI) * (tIdx / CAVITY_THETA_SEGS);
+          const r = fitObj.rFit(theta, phi);
+          const x = r * Math.sin(phi) * Math.cos(theta);
+          const y = r * Math.cos(phi);
+          const z = r * Math.sin(phi) * Math.sin(theta);
+          if (prev) addSeg(prev.x, prev.y, prev.z, x, y, z);
+          prev = {x, y, z};
+        }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      const mat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95 });
+
+      cavityWire = new THREE.LineSegments(geom, mat);
+      cavityWire.renderOrder = 999;
+      cavityWire.frustumCulled = false;
+      scene.add(cavityWire);
+    }
+
+    function applyBoundaryWireVisibility() {
+      const show = document.getElementById("inp-show-boundary").checked;
+      if (boxWire) boxWire.visible = show && fluid && fluid.boundaryMode === "endoscope";
+      if (cavityWire) cavityWire.visible = show && fluid && fluid.boundaryMode === "cavity";
+    }
+
+    function syncWireTransformToMesh() {
+      if (!mesh) return;
+      if (boxWire) { boxWire.position.copy(mesh.position); boxWire.quaternion.copy(mesh.quaternion); boxWire.scale.copy(mesh.scale); }
+      if (cavityWire) { cavityWire.position.copy(mesh.position); cavityWire.quaternion.copy(mesh.quaternion); cavityWire.scale.copy(mesh.scale); }
+    }
+
+    function setupSimulator() {
+      if (mesh) scene.remove(mesh);
+      if (densityTexture) densityTexture.dispose();
+      if (material) material.dispose();
+
+      fluid = new FluidSolver3D(GRID_RES);
+
+      fluid.vorticity = parseFloat(document.getElementById('inp-vort').value);
+      fluid.buoyancy = parseFloat(document.getElementById('inp-buoyancy').value);
+      console.log(fluid.buoyancy, "afsadf")
+      fluid.diffusion = parseFloat(document.getElementById('inp-diff').value);
+      fluid.turbulence = parseFloat(document.getElementById('inp-turb').value);
+      fluid.sourceIntensity = parseFloat(document.getElementById('inp-source').value);
+      fluid.fadeRate = parseFloat(document.getElementById('inp-fade').value);
+      fluid.pressureIters = parseInt(document.getElementById('inp-piters').value, 10);
+
+      applyBoundaryModeFromUI();
+
+      densityTexture = new THREE.Data3DTexture(fluid.density, GRID_RES, GRID_RES, GRID_RES);
+      densityTexture.format = THREE.RedFormat;
+      densityTexture.type = THREE.FloatType;
+      densityTexture.minFilter = THREE.LinearFilter;
+      densityTexture.magFilter = THREE.LinearFilter;
+      densityTexture.unpackAlignment = 1;
+      densityTexture.needsUpdate = true;
+
+      material = new THREE.ShaderMaterial({
+        uniforms: {
+          uDensity: { value: densityTexture },
+          uBaseColor: { value: new THREE.Color(document.getElementById('inp-color').value) },
+          uOpacity: { value: parseFloat(document.getElementById('inp-opacity').value) },
+          uInverseModelMatrix: { value: new THREE.Matrix4() }
+        },
+        vertexShader: document.getElementById('vertexShader').textContent,
+        fragmentShader: document.getElementById('fragmentShader').textContent,
+        transparent: true,
+        side: THREE.BackSide,
+        depthWrite: false
+      });
+
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material);
+      mesh.position.set(0, 0, 0);
+      scene.add(mesh);
+
+      ensureBoxWire();
+      applyBoundaryWireVisibility();
+      syncWireTransformToMesh();
+
+      document.getElementById('val-curr-res').innerText = `${GRID_RES}³`;
+    }
+
+    function setupInteraction() {
+      const canvas = renderer.domElement;
+      canvas.addEventListener('mousedown', (e) => { isDragging = true; previousMouseX = e.clientX; previousMouseY = e.clientY; });
+      window.addEventListener('mouseup', () => { isDragging = false; });
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const deltaX = e.clientX - previousMouseX;
+        const deltaY = e.clientY - previousMouseY;
+
+        rotationX -= deltaX * 0.01;
+        rotationY += deltaY * 0.01;
+        rotationY = Math.max(-Math.PI / 2.1, Math.min(Math.PI / 2.1, rotationY));
+        updateCameraPosition();
+
+        previousMouseX = e.clientX;
+        previousMouseY = e.clientY;
+      });
+      canvas.addEventListener('wheel', (e) => {
+        cameraDistance += e.deltaY * 0.001;
+        cameraDistance = Math.max(0.5, Math.min(3.0, cameraDistance));
+        updateCameraPosition();
+      }, { passive: true });
+    }
+
+    function updateCameraPosition() {
+      camera.position.x = cameraDistance * Math.sin(rotationX) * Math.cos(rotationY);
+      camera.position.z = cameraDistance * Math.cos(rotationX) * Math.cos(rotationY);
+      camera.position.y = cameraDistance * Math.sin(rotationY);
+      camera.lookAt(0, 0.3, 0);
+    }
+
+    function showStatus(text) {
+      const msg = document.getElementById('status-msg');
+      msg.innerText = text;
+      msg.style.display = 'block';
+      setTimeout(() => { msg.style.display = 'none'; }, 2000);
+    }
+
+    function resetViewToInitial() {
+      rotationX = INIT_ROT_X;
+      rotationY = INIT_ROT_Y;
+      cameraDistance = INIT_CAM_DIST;
+      updateCameraPosition();
+    }
+
+    function setBoundaryStatus(mode, fitted = false) {
+      document.getElementById("val-boundary").innerText = (mode === "cavity") ? "内腔" : "内窥镜";
+      const lbl = document.getElementById("lbl-fit-state");
+      if (!lbl) return;
+      if (mode === "cavity") {
+        lbl.innerText = fitted ? "已拟合" : "未拟合";
+        lbl.style.opacity = "1";
+      } else {
+        lbl.innerText = "未拟合";
+        lbl.style.opacity = "0.85";
+      }
+    }
+
+    function applyBoundaryModeFromUI() {
+      const mode = document.getElementById("inp-boundary-mode").value;
+      const cavityPanel = document.getElementById("cavity-panel");
+
+      if (mode === "cavity") {
+        cavityPanel.style.display = "block";
+        const lbl = document.getElementById("lbl-fit-state");
+        if (lbl.innerText !== "已拟合") {
+          fluid.setBoundaryMode("endoscope");
+          setBoundaryStatus("cavity", false);
+          removeCavityWire();
+        }
+      } else {
+        cavityPanel.style.display = "none";
+        fluid.setBoundaryMode("endoscope");
+        setBoundaryStatus("endoscope", false);
+        removeCavityWire();
+      }
+      applyBoundaryWireVisibility();
+    }
+
+    function setupControls() {
+      const bind = (id, obj, prop, labelId, fmt = (v)=>v.toFixed(2)) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', (e) => {
+          const v = parseFloat(e.target.value);
+          obj[prop] = v;
+          const labelEl = document.getElementById(labelId);
+          if (labelEl) labelEl.innerText = fmt(v);
+        });
+      };
+
+      document.getElementById('inp-res').addEventListener('change', (e) => {
+        GRID_RES = parseInt(e.target.value, 10);
+        setupSimulator();
+        showStatus(`已切换至分辨率 ${GRID_RES}`);
+      });
+
+      document.getElementById("inp-show-boundary").addEventListener("change", () => {
+        applyBoundaryWireVisibility();
+        showStatus("边界线框显示已更新");
+      });
+
+      document.getElementById("inp-boundary-mode").addEventListener("change", () => {
+        applyBoundaryModeFromUI();
+        showStatus("边界模式已切换");
+      });
+
+      document.getElementById("btn-fit-cavity").addEventListener("click", () => {
+        const mode = document.getElementById("inp-boundary-mode").value;
+        if (mode !== "cavity") { showStatus("请先选择：内腔边界法"); return; }
+
+        const pts = parsePointsText3D(document.getElementById("inp-cavity-points").value);
+        if (pts.length < 30) { showStatus("点太少：建议至少 30 个点"); return; }
+
+        for (const p of pts) {
+          if (p.x < -0.5 || p.x > 0.5 || p.y < -0.5 || p.y > 0.5 || p.z < -0.5 || p.z > 0.5) {
+            showStatus("点越界：x,y,z 必须在 [-0.5,0.5]");
+            return;
+          }
+        }
+
+        const fitObj = fitSphericalHarmonicBoundary(pts, SH_L);
+        if (!fitObj) {
+          showStatus("拟合失败：点数量/分布不佳（建议增加点并覆盖更多方向）");
+          return;
+        }
+
+        fluid.setBoundaryMode("cavity", fitObj);
+        document.getElementById("lbl-fit-state").innerText = "已拟合";
+        setBoundaryStatus("cavity", true);
+
+        updateCavityWireFromFit(fitObj);
+        applyBoundaryWireVisibility();
+        syncWireTransformToMesh();
+
+        showStatus(`拟合成功：L=${fitObj.L}，样本=${fitObj.n}，r∈[${fitObj.minR.toFixed(2)},${fitObj.maxR.toFixed(2)}]`);
+      });
+
+      document.getElementById("btn-reset-cavity").addEventListener("click", () => {
+        document.getElementById("inp-boundary-mode").value = "endoscope";
+        document.getElementById("cavity-panel").style.display = "none";
+        fluid.setBoundaryMode("endoscope");
+        setBoundaryStatus("endoscope", false);
+        removeCavityWire();
+        applyBoundaryWireVisibility();
+        showStatus("已恢复：内窥镜边界法");
+      });
+
+      bind('inp-vort', fluid, 'vorticity', 'lbl-vort', v=>v.toFixed(2));
+      bind('inp-buoyancy', fluid, 'buoyancy', 'lbl-buoyancy', v=>v.toFixed(2));
+      bind('inp-diff', fluid, 'diffusion', 'lbl-diff', v=>v.toFixed(2));
+      bind('inp-turb', fluid, 'turbulence', 'lbl-turb', v=>v.toFixed(2));
+      bind('inp-source', fluid, 'sourceIntensity', 'lbl-source', v=>v.toFixed(2));
+      bind('inp-fade', fluid, 'fadeRate', 'lbl-fade', v=>v.toFixed(4));
+
+      document.getElementById('inp-piters').addEventListener('input', (e) => {
+        const v = parseInt(e.target.value, 10);
+        fluid.pressureIters = v;
+        document.getElementById('lbl-piters').innerText = String(v);
+      });
+
+      document.getElementById('inp-opacity').addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        material.uniforms.uOpacity.value = v;
+        document.getElementById('lbl-opacity').innerText = v.toFixed(2);
+      });
+
+      document.getElementById('inp-color').addEventListener('input', e => {
+        material.uniforms.uBaseColor.value.set(e.target.value);
+      });
+
+      document.getElementById('btn-reset').addEventListener('click', () => {
+        fluid.reset();
+        if (mesh) mesh.position.set(0, 0, 0);
+        syncWireTransformToMesh();
+        showStatus("物理场已清空");
+      });
+
+      document.getElementById('btn-pause').addEventListener('click', (e) => {
+        isPaused = !isPaused;
+        e.target.innerText = isPaused ? "继续模拟" : "暂停模拟";
+        document.getElementById('val-status').innerText = isPaused ? "暂停中" : "运行中";
+      });
+
+      document.getElementById('btn-reset-view').addEventListener('click', () => {
+        resetViewToInitial();
+        showStatus("视角已回到初始位置");
+      });
+
+      document.getElementById('btn-center-fog').addEventListener('click', () => {
+        if (mesh) mesh.position.set(0, 0, 0);
+        syncWireTransformToMesh();
+        showStatus("雾团已回到中心");
+      });
+
+      document.getElementById('btn-run-batch').addEventListener('click', (e) => {
+        const steps = parseInt(document.getElementById('inp-batch-steps').value, 10) || 1;
+        e.target.disabled = true;
+        const oldText = e.target.innerText;
+        e.target.innerText = "计算中...";
+        setTimeout(() => {
+          for (let i = 0; i < steps; i++) fluid.step();
+          densityTexture.needsUpdate = true;
+          e.target.disabled = false;
+          e.target.innerText = oldText;
+          showStatus(`完成 ${steps} 步脱机计算`);
+        }, 10);
+      });
+
+      document.getElementById('btn-export').addEventListener('click', () => {
+        const blob = new Blob([fluid.serialize()], { type: "application/json" });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `smoke_state_${GRID_RES}_${Date.now()}.json`;
+        a.click();
+        showStatus("导出成功");
+      });
+
+      const importTrigger = document.getElementById('btn-import-trigger');
+      const fileInput = document.getElementById('inp-import');
+      importTrigger.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const json = ev.target.result;
+            const parsed = JSON.parse(json);
+            if (parsed.res && parsed.res !== GRID_RES) {
+              GRID_RES = parsed.res;
+              document.getElementById('inp-res').value = String(GRID_RES);
+              setupSimulator();
+            }
+            fluid.deserialize(json);
+            densityTexture.needsUpdate = true;
+
+            if (fluid.boundaryMode === "cavity") {
+              document.getElementById("inp-boundary-mode").value = "cavity";
+              document.getElementById("cavity-panel").style.display = "block";
+              document.getElementById("lbl-fit-state").innerText = "已拟合";
+              setBoundaryStatus("cavity", true);
+              updateCavityWireFromFit(fluid.boundaryFit);
+            } else {
+              document.getElementById("inp-boundary-mode").value = "endoscope";
+              document.getElementById("cavity-panel").style.display = "none";
+              setBoundaryStatus("endoscope", false);
+              removeCavityWire();
+            }
+
+            applyBoundaryWireVisibility();
+            syncWireTransformToMesh();
+
+            showStatus("导入成功");
+          } catch (err) {
+            showStatus("导入失败: 格式错误");
+          }
+        };
+        reader.readAsText(file);
+      });
+
+      document.getElementById('btn-capture').addEventListener('click', async () => {
+        try {
+          try { recDirHandle = await ensureDirectoryHandle(); } catch { recDirHandle = null; }
+          const prefix = buildParamPrefix();
+          await captureOneFrameTransparentCustomName(prefix, 1);
+          showStatus("透明快照已捕获（参数命名）");
+        } catch (e) {
+          showStatus("捕获失败（权限/存储）");
+        }
+      });
+
+      document.getElementById('btn-burst-22').addEventListener('click', () => {
+        if (recTimer) {
+          showStatus("请先停止连续保存，再执行一次性 22 帧");
+          return;
+        }
+        burstSave22Frames();
+      });
+
+      const btnStartRec = document.getElementById("btn-start-rec");
+      const btnStopRec  = document.getElementById("btn-stop-rec");
+
+      btnStartRec.addEventListener("click", async () => {
+        if (recTimer) return;
+        if (isBursting) return;
+
+        try { recDirHandle = await ensureDirectoryHandle(); }
+        catch (e) { recDirHandle = null; }
+
+        const prefix = buildParamPrefix();
+        recIndex = 1;
+
+        btnStartRec.disabled = true;
+        btnStopRec.disabled = false;
+
+        showStatus(`开始连续保存（参数命名）：${prefix}`);
+
+        await captureOneFrameTransparentCustomName(prefix, recIndex);
+        recIndex += 1;
+
+        recTimer = setInterval(() => {
+          captureOneFrameTransparentCustomName(prefix, recIndex).then(() => {
+            recIndex += 1;
+          }).catch(() => {});
+        }, REC_INTERVAL_MS);
+      });
+
+      btnStopRec.addEventListener("click", () => {
+        if (!recTimer) return;
+        clearInterval(recTimer);
+        recTimer = null;
+
+        btnStartRec.disabled = false;
+        btnStopRec.disabled = true;
+
+        showStatus(`停止保存，共保存 ${recIndex - 1} 张`);
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const dtMove = moveClock.getDelta();
+      applyFogKeyboardMove(dtMove);
+
+      const start = performance.now();
+      if (fluid && !isPaused) {
+        fluid.step();
+        densityTexture.needsUpdate = true;
+      }
+      const elapsed = performance.now() - start;
+      document.getElementById('val-ms').innerText = isPaused ? "0.0" : elapsed.toFixed(1);
+
+      let maxD = 0;
+      for (let i = 0; i < fluid.size; i++) {
+        const d = fluid.density[i];
+        if (d > maxD) maxD = d;
+      }
+      document.getElementById('val-max-d').innerText = maxD.toFixed(1);
+
+      const zoom = getZoomValue();
+      document.getElementById('val-zoom').innerText = `${zoom.toFixed(2)}x`;
+
+      if (mesh) {
+        mesh.updateMatrixWorld();
+        material.uniforms.uInverseModelMatrix.value.copy(mesh.matrixWorld).invert();
+      }
+
+      syncWireTransformToMesh();
+      applyBoundaryWireVisibility();
+
+      renderer.render(scene, camera);
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
+
