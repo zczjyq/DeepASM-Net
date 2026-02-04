@@ -63,24 +63,49 @@ def build_pairs_hazy_clear(root: str, hazy_dir: str, clean_dir: str) -> List[Pai
 
 
 def build_pairs_same_name(root: str, hazy_dir: str, clean_dir: str) -> List[PairItem]:
+    """按文件名完全匹配配对，适用于 test 等 hazy/GT 同名场景"""
     hazy_root = os.path.join(root, hazy_dir)
     clean_root = os.path.join(root, clean_dir)
-
     clean_map: Dict[str, str] = {}
     for path in _list_images(clean_root):
         name = os.path.basename(path)
         clean_map[name.lower()] = path
-
     pairs: List[PairItem] = []
     for path in _list_images(hazy_root):
         name = os.path.basename(path)
         clean_path = clean_map.get(name.lower())
         if clean_path is None:
             continue
-        # Stable id based on filename (consistent across runs)
         clean_id = int(hashlib.md5(name.lower().encode("utf-8")).hexdigest()[:8], 16)
         pairs.append(PairItem(path, clean_path, clean_id, 0))
+    pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
+    return pairs
 
+
+def build_pairs_reside(root: str, hazy_dir: str, clean_dir: str) -> List[PairItem]:
+    """
+    RESIDE train 配对：hazy 为 scene_level.png，GT 为 scene_level_beta.png
+    如 hazy 100_6.png -> GT 100_6_0.71799.png
+    """
+    hazy_root = os.path.join(root, hazy_dir)
+    clean_root = os.path.join(root, clean_dir)
+    clean_by_prefix: Dict[str, str] = {}
+    for path in _list_images(clean_root):
+        name = os.path.basename(path)
+        base, _ = os.path.splitext(name)
+        parts = base.split("_")
+        if len(parts) >= 2:
+            prefix = f"{parts[0]}_{parts[1]}"
+            clean_by_prefix[prefix.lower()] = path
+    pairs: List[PairItem] = []
+    for path in _list_images(hazy_root):
+        name = os.path.basename(path)
+        base, _ = os.path.splitext(name)
+        clean_path = clean_by_prefix.get(base.lower())
+        if clean_path is None:
+            continue
+        clean_id = int(hashlib.md5(base.lower().encode("utf-8")).hexdigest()[:8], 16)
+        pairs.append(PairItem(path, clean_path, clean_id, 0))
     pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
     return pairs
 
@@ -179,46 +204,81 @@ class HazyClearDataset(Dataset):
         return hazy_t, clean_t, item.clean_id, item.haze_level
 
 
-def get_dataloaders(cfg: dict):
+def _collect_pairs_from_entries(root: str, entries: list) -> List[PairItem]:
+    """从 datasets/test_datasets 配置中收集配对"""
     pairs: List[PairItem] = []
-    root = cfg["paths"]["root"]
-
-    # 1) Explicit datasets list
-    datasets_cfg = cfg["paths"].get("datasets", [])
-    for entry in datasets_cfg:
-        if entry.get("type") == "same_name":
-            pairs.extend(build_pairs_same_name(root, entry["hazy_dir"], entry["clean_dir"]))
+    for entry in entries:
+        hd, cd = entry.get("hazy_dir"), entry.get("clean_dir")
+        if not hd or not cd:
+            continue
+        t = entry.get("type", "same_name")
+        if t == "same_name":
+            pairs.extend(build_pairs_same_name(root, hd, cd))
+        elif t == "reside":
+            pairs.extend(build_pairs_reside(root, hd, cd))
         else:
-            pairs.extend(build_pairs_hazy_clear(root, entry["hazy_dir"], entry["clean_dir"]))
-
-    # 2) Auto-discover IN/GT datasets under root
-    if cfg["paths"].get("auto_discover_in_gt", True):
-        for hazy_dir, clean_dir in _discover_in_gt_pairs(root):
-            pairs.extend(build_pairs_same_name(root, hazy_dir, clean_dir))
-
-    # 3) Legacy hazy/clear dataset if configured
-    if cfg["paths"].get("use_legacy_hazy_clear", True):
-        pairs.extend(build_pairs_hazy_clear(root, cfg["paths"]["hazy_dir"], cfg["paths"]["clean_dir"]))
-
-    # Deduplicate by hazy path
+            pairs.extend(build_pairs_hazy_clear(root, hd, cd))
     uniq = {}
     for p in pairs:
         uniq[p.hazy_path] = p
     pairs = list(uniq.values())
     pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
+    return pairs
 
-    if len(pairs) == 0:
-        raise ValueError(
-            f"未找到任何图像对。请检查 paths.root='{root}' 下是否存在 IN/GT 目录（或 hazy/clear），"
-            f"且文件名能正确配对。可通过 --root 指定数据路径。"
+
+def get_dataloaders(cfg: dict):
+    root = cfg["paths"]["root"]
+    use_native = cfg["split"].get("use_native_split", False)
+
+    if use_native:
+        # 使用数据集自带的 train/test：训练集来自 datasets，验证集来自 test_datasets
+        train_entries = cfg["paths"].get("datasets", [])
+        test_entries = cfg["paths"].get("test_datasets", [])
+        if not train_entries:
+            raise ValueError("use_native_split 时需配置 paths.datasets 作为训练集")
+        if not test_entries:
+            raise ValueError("use_native_split 时需配置 paths.test_datasets 作为验证/测试集")
+        train_pairs = _collect_pairs_from_entries(root, train_entries)
+        val_pairs = _collect_pairs_from_entries(root, test_entries)
+        if len(train_pairs) == 0:
+            raise ValueError("训练集为空，请检查 paths.datasets 配置")
+        if len(val_pairs) == 0:
+            raise ValueError("测试集为空，请检查 paths.test_datasets 配置")
+        print(f"==> 使用数据集自带划分: train={len(train_pairs)}, test={len(val_pairs)}")
+    else:
+        # 原逻辑：从 datasets 收集全部数据，按 train_ratio 自己划分
+        pairs: List[PairItem] = []
+        datasets_cfg = cfg["paths"].get("datasets", [])
+        for entry in datasets_cfg:
+            t = entry.get("type", "same_name")
+            if t == "same_name":
+                pairs.extend(build_pairs_same_name(root, entry["hazy_dir"], entry["clean_dir"]))
+            elif t == "reside":
+                pairs.extend(build_pairs_reside(root, entry["hazy_dir"], entry["clean_dir"]))
+            else:
+                pairs.extend(build_pairs_hazy_clear(root, entry["hazy_dir"], entry["clean_dir"]))
+        if cfg["paths"].get("auto_discover_in_gt", True):
+            for hazy_dir, clean_dir in _discover_in_gt_pairs(root):
+                pairs.extend(build_pairs_same_name(root, hazy_dir, clean_dir))
+        if cfg["paths"].get("use_legacy_hazy_clear", True):
+            pairs.extend(build_pairs_hazy_clear(root, cfg["paths"]["hazy_dir"], cfg["paths"]["clean_dir"]))
+        uniq = {}
+        for p in pairs:
+            uniq[p.hazy_path] = p
+        pairs = list(uniq.values())
+        pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
+        if len(pairs) == 0:
+            raise ValueError(
+                f"未找到任何图像对。请检查 paths.root='{root}' 下 datasets 配置，"
+                f"或设置 split.use_native_split: true 并配置 test_datasets。"
+            )
+        train_ids, val_ids = split_by_clean_id(
+            pairs, cfg["split"]["train_ratio"], cfg.get("seed", 123), cfg["split"]["shuffle"]
         )
-
-    train_ids, val_ids = split_by_clean_id(pairs, cfg["split"]["train_ratio"], cfg.get("seed", 123), cfg["split"]["shuffle"])
-    train_pairs = [p for p in pairs if p.clean_id in train_ids]
-    val_pairs = [p for p in pairs if p.clean_id in val_ids]
-
-    if len(train_pairs) == 0:
-        raise ValueError("划分后训练集为空，请检查 split.train_ratio 或数据量。")
+        train_pairs = [p for p in pairs if p.clean_id in train_ids]
+        val_pairs = [p for p in pairs if p.clean_id in val_ids]
+        if len(train_pairs) == 0:
+            raise ValueError("划分后训练集为空，请检查 split.train_ratio 或数据量。")
 
     use_cv2 = cfg["transforms"].get("use_cv2_load", False)
     train_set = HazyClearDataset(

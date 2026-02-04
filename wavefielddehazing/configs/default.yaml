@@ -5,16 +5,21 @@ paths:
   hazy_dir: RESIDE-IN/train/hazy
   clean_dir: RESIDE-IN/train/GT
   use_legacy_hazy_clear: false
-  auto_discover_in_gt: true
-  # RESIDE-IN 等数据集：按文件名配对。可添加多个
+  auto_discover_in_gt: false
+  # 训练集（RESIDE train: hazy 100_6.png, GT 100_6_0.xx.png 用 reside）
   datasets:
-    - type: same_name
+    - type: reside
       hazy_dir: RESIDE-IN/train/hazy
       clean_dir: RESIDE-IN/train/GT
-
+  # 数据集自带的测试集（仅当 split.use_native_split=true 时使用）
+  test_datasets:
+    - type: same_name
+      hazy_dir: RESIDE-IN/test/hazy
+      clean_dir: RESIDE-IN/test/GT
 
 split:
-  train_ratio: 0.85
+  use_native_split: true   # true=用上面的 train+test；false=只用 train 按比例划分
+  train_ratio: 0.85       # use_native_split=false 时生效
   shuffle: true
 
 loader:
