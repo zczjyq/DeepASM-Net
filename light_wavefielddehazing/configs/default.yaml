@@ -76,9 +76,9 @@ transforms:
 # 模型结构
 # -----------------------------------------------------------------------------
 model:
-  num_layers: 10         # ABlock 堆叠层数
+  num_layers: 3          # ABlock 堆叠层数（已改为 3 层）
   share_weights: false   # 各层 ABlock 是否共享权重
-  # 如果use_skip_fusion=true，则使用U-Net式结构，上面的num_layers 不用管 默认为5，否则使用串行结构
+  # use_skip_fusion=true 时使用 U-Net 式结构（最后几层带 SK 融合），层数由 num_layers 决定
   use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
   use_norm: true         # 是否使用归一化层
 
@@ -92,24 +92,24 @@ model:
   amp_mode: identity
   output_mode: abs       # 输出 |Uz| 或 |Uz|^2
 
-  mix_hidden: 64         # Mix 头的隐藏通道数
+  mix_hidden: 32         # Mix 头隐藏通道数（64→32 减参）
 
   # 相位预测子网络
   phase_module:
-    hidden: 32
-    num_layers: 2
+    hidden: 16            # 32→16 减参
+    num_layers: 1         # 2→1 减参
     use_channel_residual: true
     phase_residual_scale: 0.6
 
   # 传播距离 z 预测子网络
   z_module:
-    hidden: 32
-    num_layers: 2
+    hidden: 16             # 32→16 减参
+    num_layers: 1          # 2→1 减参
 
   # 颜色校正模块
   color_corrector:
     enabled: true
-    hidden: 32
+    hidden: 16             # 32→16 减参
 
 # -----------------------------------------------------------------------------
 # 训练超参数
