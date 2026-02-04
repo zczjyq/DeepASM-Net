@@ -30,7 +30,12 @@ class PairItem:
 def _list_images(folder: str) -> List[str]:
     if not os.path.isdir(folder):
         return []
-    return [os.path.join(folder, f) for f in os.listdir(folder)]
+    exts = (".jpg", ".jpeg", ".png", ".bmp")
+    return [
+        os.path.join(folder, f)
+        for f in os.listdir(folder)
+        if f.lower().endswith(exts)
+    ]
 
 
 def build_pairs_hazy_clear(root: str, hazy_dir: str, clean_dir: str) -> List[PairItem]:
@@ -204,31 +209,63 @@ class HazyClearDataset(Dataset):
         return hazy_t, clean_t, item.clean_id, item.haze_level
 
 
-def _collect_pairs_from_entries(root: str, entries: list) -> List[PairItem]:
+def _debug_dataset_info(root: str, hazy_dir: str, clean_dir: str, pair_type: str):
+    """输出数据集路径与文件数量的调试信息"""
+    hazy_root = os.path.join(root, hazy_dir)
+    clean_root = os.path.join(root, clean_dir)
+    hazy_exists = os.path.isdir(hazy_root)
+    clean_exists = os.path.isdir(clean_root)
+    hazy_files = _list_images(hazy_root) if hazy_exists else []
+    clean_files = _list_images(clean_root) if clean_exists else []
+    print(f"  [debug] type={pair_type}")
+    print(f"  [debug] root={os.path.abspath(root)} (exists={os.path.isdir(root)})")
+    print(f"  [debug] hazy_full={os.path.abspath(hazy_root)} (exists={hazy_exists}) count={len(hazy_files)}")
+    print(f"  [debug] clean_full={os.path.abspath(clean_root)} (exists={clean_exists}) count={len(clean_files)}")
+    if hazy_files:
+        print(f"  [debug] hazy_samples={[os.path.basename(p) for p in hazy_files[:3]]}")
+    if clean_files:
+        print(f"  [debug] clean_samples={[os.path.basename(p) for p in clean_files[:3]]}")
+
+
+def _collect_pairs_from_entries(root: str, entries: list, debug: bool = True) -> List[PairItem]:
     """从 datasets/test_datasets 配置中收集配对"""
     pairs: List[PairItem] = []
-    for entry in entries:
+    for i, entry in enumerate(entries):
         hd, cd = entry.get("hazy_dir"), entry.get("clean_dir")
         if not hd or not cd:
+            if debug:
+                print(f"  [debug] entry[{i}] 缺少 hazy_dir 或 clean_dir，跳过")
             continue
         t = entry.get("type", "same_name")
+        if debug:
+            _debug_dataset_info(root, hd, cd, t)
+        n_before = len(pairs)
         if t == "same_name":
             pairs.extend(build_pairs_same_name(root, hd, cd))
         elif t == "reside":
             pairs.extend(build_pairs_reside(root, hd, cd))
         else:
             pairs.extend(build_pairs_hazy_clear(root, hd, cd))
+        if debug:
+            print(f"  [debug] entry[{i}] 新增 pairs={len(pairs) - n_before}")
     uniq = {}
     for p in pairs:
         uniq[p.hazy_path] = p
     pairs = list(uniq.values())
     pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
+    if debug:
+        print(f"  [debug] 去重后总 pairs={len(pairs)}")
     return pairs
 
 
-def get_dataloaders(cfg: dict):
+def get_dataloaders(cfg: dict, debug: bool = None):
     root = cfg["paths"]["root"]
     use_native = cfg["split"].get("use_native_split", False)
+    if debug is None:
+        debug = cfg["paths"].get("debug_datasets", True)
+    if debug:
+        print(f"[debug] paths.root = {root}")
+        print(f"[debug] split.use_native_split = {use_native}")
 
     if use_native:
         # 使用数据集自带的 train/test：训练集来自 datasets，验证集来自 test_datasets
@@ -238,10 +275,18 @@ def get_dataloaders(cfg: dict):
             raise ValueError("use_native_split 时需配置 paths.datasets 作为训练集")
         if not test_entries:
             raise ValueError("use_native_split 时需配置 paths.test_datasets 作为验证/测试集")
-        train_pairs = _collect_pairs_from_entries(root, train_entries)
-        val_pairs = _collect_pairs_from_entries(root, test_entries)
+        if debug:
+            print("[debug] 正在收集训练集 pairs...")
+        train_pairs = _collect_pairs_from_entries(root, train_entries, debug=debug)
+        if debug:
+            print("[debug] 正在收集测试集 pairs...")
+        val_pairs = _collect_pairs_from_entries(root, test_entries, debug=debug)
         if len(train_pairs) == 0:
-            raise ValueError("训练集为空，请检查 paths.datasets 配置")
+            raise ValueError(
+                "训练集为空，请检查 paths.datasets 配置。"
+                "确保 paths.root 指向包含 RESIDE-IN 的目录，"
+                "且 RESIDE-IN/train/hazy 与 RESIDE-IN/train/GT 存在且配对正确。"
+            )
         if len(val_pairs) == 0:
             raise ValueError("测试集为空，请检查 paths.test_datasets 配置")
         print(f"==> 使用数据集自带划分: train={len(train_pairs)}, test={len(val_pairs)}")
