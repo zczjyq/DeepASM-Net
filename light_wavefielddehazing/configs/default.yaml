@@ -10,8 +10,8 @@ seed: 123
 # -----------------------------------------------------------------------------
 paths:
   # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
-  root: D:\声呐项目\qwh工作区
-
+  root: D:\Desktop\毕业论文\code\data
+  
   # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
   hazy_dir: RESIDE-IN/train/hazy
   clean_dir: RESIDE-IN/train/GT
