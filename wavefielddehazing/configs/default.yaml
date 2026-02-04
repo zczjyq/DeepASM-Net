@@ -1,85 +1,148 @@
+# =============================================================================
+# DeepASM-Net / Wavefield Dehazing 默认配置文件
+# =============================================================================
+
+# 随机种子，用于复现实验
 seed: 123
 
+# -----------------------------------------------------------------------------
+# 数据路径与数据集配置
+# -----------------------------------------------------------------------------
 paths:
-  root: D:/Desktop/毕业论文/code/data
+  # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
+  root: D:\声呐项目\qwh工作区
+
+  # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
   hazy_dir: RESIDE-IN/train/hazy
   clean_dir: RESIDE-IN/train/GT
+
+  # 是否使用旧版 hazy/clean 单一路径配置
   use_legacy_hazy_clear: false
+
+  # 是否自动发现 root 下所有 IN/GT 子目录作为数据集
   auto_discover_in_gt: false
-  # 训练集（RESIDE train: hazy 100_6.png, GT 100_6_0.xx.png 用 reside）
+
+  # 训练集列表，可配置多个数据集
+  # type 可选: same_name（文件名完全相同）, reside（RESIDE 格式）, hazy_clear
+  # - same_name: hazy 与 GT 文件名一一对应，如 1400_1.png
+  # - reside: RESIDE train 格式，hazy 100_6.png 对应 GT 100_6_0.xx.png
   datasets:
     - type: reside
       hazy_dir: RESIDE-IN/train/hazy
       clean_dir: RESIDE-IN/train/GT
-  # 数据集自带的测试集（仅当 split.use_native_split=true 时使用）
+
+  # 测试集（仅当 split.use_native_split=true 时使用）
+  # 使用数据集官方的 train/test 划分，验证 PSNR/SSIM 在 test 上计算
   test_datasets:
     - type: same_name
       hazy_dir: RESIDE-IN/test/hazy
       clean_dir: RESIDE-IN/test/GT
 
+# -----------------------------------------------------------------------------
+# 数据划分策略
+# -----------------------------------------------------------------------------
 split:
-  use_native_split: true   # true=用上面的 train+test；false=只用 train 按比例划分
-  train_ratio: 0.85       # use_native_split=false 时生效
+  # 是否使用数据集自带的 train/test 划分
+  # true: 训练用 datasets，验证用 test_datasets
+  # false: 只用 datasets，按 train_ratio 随机划分 train/val
+  use_native_split: true
+
+  # 当 use_native_split=false 时，训练集占全部数据的比例
+  train_ratio: 0.85
+
+  # 划分时是否打乱顺序
   shuffle: true
 
+# -----------------------------------------------------------------------------
+# DataLoader 参数
+# -----------------------------------------------------------------------------
 loader:
-  batch_size: 32          # 增大以吃满 GPU，显存不足可改回 4
-  val_batch_size: 8
-  num_workers: 8         # 提高 CPU 并行读图，可按 CPU 核数调（建议 4–8）
-  pin_memory: true       # 加速 CPU→GPU 传输
-  prefetch_factor: 4     # 每 worker 预取 batch 数，减少 GPU 等待
-  persistent_workers: true  # 复用 worker，避免每 epoch 重建
+  batch_size: 8          # 训练 batch 大小，显存不足可减小（如 4）
+  val_batch_size: 8      # 验证 batch 大小
+  num_workers: 8         # 数据加载进程数，建议为 CPU 核数的一半或相等
+  pin_memory: true       # 锁页内存，加速 CPU→GPU 数据传输
+  prefetch_factor: 4     # 每个 worker 预取的 batch 数，减少 GPU 空闲等待
+  persistent_workers: true  # 是否复用 worker，避免每个 epoch 重新创建
 
+# -----------------------------------------------------------------------------
+# 数据增强与预处理
+# -----------------------------------------------------------------------------
 transforms:
-  image_size: 256
-  random_flip: true
-  use_cv2_load: true   # cv2 读图通常比 PIL 快，且支持中文路径
+  image_size: 256        # 输入图像裁剪/缩放到此尺寸
+  random_flip: true      # 训练时随机水平翻转
+  use_cv2_load: true     # 用 cv2 读图（通常比 PIL 快，且支持中文路径）
 
+# -----------------------------------------------------------------------------
+# 模型结构
+# -----------------------------------------------------------------------------
 model:
-  num_layers: 10
-  share_weights: false
-  use_skip_fusion: true   # U-Net 式结构，ABlock 间带 SK Fusion 跳跃连接
-  use_norm: true
+  num_layers: 10         # ABlock 堆叠层数
+  share_weights: false   # 各层 ABlock 是否共享权重
+  # 如果use_skip_fusion=true，则使用U-Net式结构，上面的num_layers 不用管 默认为5，否则使用串行结构
+  use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
+  use_norm: true         # 是否使用归一化层
+
+  # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]
+
+  # 传播距离 z 的最大值（归一化）
   z_max: 0.3
+
+  # ASM 输出模式: identity / abs / abs2
   amp_mode: identity
-  output_mode: abs
-  mix_hidden: 64
+  output_mode: abs       # 输出 |Uz| 或 |Uz|^2
+
+  mix_hidden: 64         # Mix 头的隐藏通道数
+
+  # 相位预测子网络
   phase_module:
     hidden: 32
     num_layers: 2
     use_channel_residual: true
     phase_residual_scale: 0.6
+
+  # 传播距离 z 预测子网络
   z_module:
     hidden: 32
     num_layers: 2
+
+  # 颜色校正模块
   color_corrector:
     enabled: true
     hidden: 32
 
+# -----------------------------------------------------------------------------
+# 训练超参数
+# -----------------------------------------------------------------------------
 train:
-  epochs: 100
-  lr: 1.0e-4
-  weight_decay: 1.0e-4
-  cosine_tmax: 100
-  warmup_epochs: 5
-  grad_clip: 1.0
-  amp: true
-  log_interval: 50
-  fixed_val_samples: 12
+  epochs: 200            # 训练轮数
+  lr: 1.0e-4             # 学习率
+  weight_decay: 1.0e-4   # 权重衰减（L2 正则）
+  cosine_tmax: 100       # 余弦退火调度器的周期
+  warmup_epochs: 5       # 学习率 warmup 轮数
+  grad_clip: 1.0         # 梯度裁剪阈值，0 表示不裁剪
+  amp: true              # 是否使用混合精度 (FP16) 加速
+  log_interval: 50       # 每多少 step 打印一次（若支持）
+  fixed_val_samples: 12  # 每轮保存的验证样本数量（用于生成对比图）
 
+# -----------------------------------------------------------------------------
+# 损失函数权重
+# -----------------------------------------------------------------------------
 loss:
-  l1: 1.0
-  ssim: 0.1
-  perceptual: 0.02
-  color: 0.3
-  luma: 0.3
-  edge: 0.02
-  saturation: 0.5
-  z_reg: 0.0
-  phase_tv: 0.01
-  perceptual_layers: [3, 8, 15]
+  l1: 1.0                # L1 重建损失
+  ssim: 0.1              # SSIM 损失（1 - SSIM）
+  perceptual: 0.02       # VGG 感知损失
+  color: 0.3             # 色度损失 (YCbCr)
+  luma: 0.3              # 亮度损失
+  edge: 0.02             # 边缘损失 (Sobel)
+  saturation: 0.5        # 饱和度损失
+  z_reg: 0.0             # z 通道正则（三通道 z 差异）
+  phase_tv: 0.01         # 相位 Total Variation 正则
+  perceptual_layers: [3, 8, 15]  # VGG 感知损失使用的层索引
 
+# -----------------------------------------------------------------------------
+# 输出目录
+# -----------------------------------------------------------------------------
 output:
-  runs_dir: ./runs
-  outputs_dir: ./outputs
+  runs_dir: ./runs       # 训练 run 保存根目录（含 checkpoint、日志、样本图）
+  outputs_dir: ./outputs # 推理输出目录（infer.py 等使用）
