@@ -26,4 +26,5 @@ git push --set-upstream origin main
 推送前先pull！！!!
 
 防止冲突：git add . → git commit -m "" → git pull --rebase → 解决冲突(如果有) → git push
+
 git pull --rebase含义：如果他已经 push 了，就先把他的改动接过来，再把我的提交接在最上面。
