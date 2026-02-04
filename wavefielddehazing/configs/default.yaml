@@ -10,7 +10,7 @@ seed: 123
 # -----------------------------------------------------------------------------
 paths:
   # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
-  root: D:\声呐项目\qwh工作区
+  root: D:/声呐项目/qwh工作区/RESIDE-IN
 
   # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
   hazy_dir: RESIDE-IN/train/hazy
@@ -27,16 +27,16 @@ paths:
   # - same_name: hazy 与 GT 文件名一一对应，如 1400_1.png
   # - reside: RESIDE train 格式，hazy 100_6.png 对应 GT 100_6_0.xx.png
   datasets:
-    - type: reside
-      hazy_dir: RESIDE-IN/train/hazy
-      clean_dir: RESIDE-IN/train/GT
+    - type: same_name
+      hazy_dir: train/hazy
+      clean_dir: train/GT
 
   # 测试集（仅当 split.use_native_split=true 时使用）
   # 使用数据集官方的 train/test 划分，验证 PSNR/SSIM 在 test 上计算
   test_datasets:
     - type: same_name
-      hazy_dir: RESIDE-IN/test/hazy
-      clean_dir: RESIDE-IN/test/GT
+      hazy_dir: test/hazy
+      clean_dir: test/GT
 
 # -----------------------------------------------------------------------------
 # 数据划分策略
@@ -57,7 +57,7 @@ split:
 # DataLoader 参数
 # -----------------------------------------------------------------------------
 loader:
-  batch_size: 8          # 训练 batch 大小，显存不足可减小（如 4）
+  batch_size: 16          # 训练 batch 大小，显存不足可减小（如 4）
   val_batch_size: 8      # 验证 batch 大小
   num_workers: 8         # 数据加载进程数，建议为 CPU 核数的一半或相等
   pin_memory: true       # 锁页内存，加速 CPU→GPU 数据传输
