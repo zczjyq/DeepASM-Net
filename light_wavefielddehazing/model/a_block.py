@@ -72,6 +72,7 @@ class ABlock(nn.Module):
         z_layers: int = 1,
         z_max: float = 0.3,
         mix_hidden: int = 32,
+        use_mix_head: bool = True,
         wavelengths=(0.65, 0.53, 0.47),
         amp_mode: str = "identity",
         output_mode: str = "abs",
@@ -85,7 +86,8 @@ class ABlock(nn.Module):
             phase_residual_scale: 通道残差缩放系数
             z_hidden/layers: ZModule 隐藏维度和 ResBlock 层数
             z_max: 传播距离 z 的上界
-            mix_hidden: Mix 头隐藏层通道数
+            mix_hidden: Mix 头隐藏层通道数（仅 use_mix_head=True 时使用）
+            use_mix_head: 是否使用 Mix 头与通道注意力；False 时直接输出 ASM 的 J
             wavelengths: RGB 三通道波长 (R, G, B)，单位与空间归一化一致
             amp_mode: 振幅模式，"identity" 或 "sqrt"
             output_mode: ASM 输出模式，"abs" 或 "abs2"
@@ -94,6 +96,7 @@ class ABlock(nn.Module):
         self.use_norm = use_norm
         self.amp_mode = amp_mode
         self.output_mode = output_mode
+        self.use_mix_head = use_mix_head
         self.register_buffer("wavelengths", torch.tensor(wavelengths))
 
         # 输入归一化
@@ -117,24 +120,24 @@ class ABlock(nn.Module):
         # 频域增强：FFT*H 后、IFFT 前（hidden 8 减参）
         self.freq_enhance = FreqEnhance(channels=in_ch, hidden=8)
 
-        # Mix 头输入：[x_rgb(3), J_luma(1), J_contrast(1)] = 5 通道
-        # 仅用 J 的亮度结构信息，避免色偏
-        self.mix = nn.Sequential(
-            nn.Conv2d(in_ch + 2, mix_hidden, kernel_size=3, padding=1),
-            nn.GroupNorm(1, mix_hidden),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(mix_hidden, mix_hidden, kernel_size=3, padding=1),
-            nn.GroupNorm(1, mix_hidden),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(mix_hidden, in_ch, kernel_size=1),
-        )
-        self.ca = _ChannelAttention(in_ch)
-
-        # 残差步长，可学习
-        self.alpha = nn.Parameter(torch.tensor(0.3))
-
-        # BT.601 亮度权重，用于提取 J_luma
-        self.register_buffer("_luma_w", torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1))
+        if use_mix_head:
+            self.mix = nn.Sequential(
+                nn.Conv2d(in_ch + 2, mix_hidden, kernel_size=3, padding=1),
+                nn.GroupNorm(1, mix_hidden),
+                nn.SiLU(inplace=True),
+                nn.Conv2d(mix_hidden, mix_hidden, kernel_size=3, padding=1),
+                nn.GroupNorm(1, mix_hidden),
+                nn.SiLU(inplace=True),
+                nn.Conv2d(mix_hidden, in_ch, kernel_size=1),
+            )
+            self.ca = _ChannelAttention(in_ch)
+            self.alpha = nn.Parameter(torch.tensor(0.3))
+            self.register_buffer("_luma_w", torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1))
+        else:
+            self.mix = None
+            self.ca = None
+            self.alpha = None
+            self._luma_w = None
 
     def _amplitude(self, x: torch.Tensor) -> torch.Tensor:
         """振幅提取：identity 直接取 x，sqrt 取 sqrt(x)"""
@@ -169,9 +172,10 @@ class ABlock(nn.Module):
                              enhance_module=self.freq_enhance)
         J = J.to(dtype=x.dtype)
 
+        if not self.use_mix_head:
+            return torch.clamp(J, 0.0, 1.0)
+
         # 3. 从 J 提取颜色无关的结构线索
-        #    J_luma: 传播后亮度（去雾强度图）
-        #    J_contrast: x 到 J 的亮度差（去雾区域）
         x_luma = (x * self._luma_w).sum(dim=1, keepdim=True)
         J_luma = (J * self._luma_w).sum(dim=1, keepdim=True)
         J_contrast = J_luma - x_luma

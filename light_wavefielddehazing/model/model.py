@@ -97,23 +97,19 @@ class ColorCorrector(nn.Module):
 
 class AStack(nn.Module):
     """
-    主去雾网络：固定 3 层 ABlock + 层间残差
+    主去雾网络：N 层 ABlock + 层间残差（N 由 num_layers 指定，可设为 1 做单块实验）
 
-    结构：x -> [ABlock1 -> +res0*x] -> x1 -> [ABlock2 -> +res1*x1] -> x2 -> [ABlock3 -> +res2*x2] -> out
-    三层之间用可学习权重的残差连接，稳定训练并保留多尺度信息。
+    结构：x -> [ABlock1 + res0*x] -> ... -> [ABlockN + res_{N-1}*x_{N-1}] -> out
     """
-
-    NUM_LAYERS = 3
 
     def __init__(self, num_layers: int = 3, share_weights: bool = False,
                  color_corrector_hidden: int = 0, use_skip_fusion: bool = True, **ablock_kwargs):
         super().__init__()
-        # 写死 3 层 ABlock
-        self.blocks = nn.ModuleList([ABlock(**ablock_kwargs) for _ in range(self.NUM_LAYERS)])
-        # 层间残差：每层输出 + scale * 该层输入，可学习权重初始小一点
-        self.res_scale_0 = nn.Parameter(torch.tensor(0.1))  # x1 = block0(x) + res_scale_0 * x
-        self.res_scale_1 = nn.Parameter(torch.tensor(0.1))  # x2 = block1(x1) + res_scale_1 * x1
-        self.res_scale_2 = nn.Parameter(torch.tensor(0.1))  # x3 = block2(x2) + res_scale_2 * x2
+        self.num_layers = max(1, int(num_layers))
+        self.blocks = nn.ModuleList([ABlock(**ablock_kwargs) for _ in range(self.num_layers)])
+        self.res_scales = nn.ParameterList([
+            nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_layers)
+        ])
 
         if color_corrector_hidden > 0:
             self.color_corrector = ColorCorrector(in_ch=3, hidden=color_corrector_hidden)
@@ -131,11 +127,11 @@ class AStack(nn.Module):
             self.last_phi_shareds.append(blk.last_phi_shared)
             return out
 
-        x1 = _run(self.blocks[0], x) + self.res_scale_0 * x
-        x2 = _run(self.blocks[1], x1) + self.res_scale_1 * x1
-        x = _run(self.blocks[2], x2) + self.res_scale_2 * x2
-
-        x = torch.clamp(x, 0.0, 1.0)
+        inp = x
+        for i in range(self.num_layers):
+            out = _run(self.blocks[i], inp)
+            inp = out + self.res_scales[i] * inp
+        x = torch.clamp(inp, 0.0, 1.0)
         if self.color_corrector is not None:
             x = self.color_corrector(x, original)
             x = torch.clamp(x, 0.0, 1.0)
@@ -173,6 +169,7 @@ def build_model_from_config(cfg: dict) -> AStack:
         phase_residual_scale=phase_cfg.get("phase_residual_scale", 0.1),
         z_max=mcfg["z_max"],
         mix_hidden=mcfg.get("mix_hidden", 64),
+        use_mix_head=mcfg.get("use_mix_head", True),
         wavelengths=mcfg["wavelengths"],
         amp_mode=mcfg["amp_mode"],
         output_mode=mcfg["output_mode"],

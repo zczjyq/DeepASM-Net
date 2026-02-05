@@ -76,11 +76,11 @@ transforms:
 # 模型结构
 # -----------------------------------------------------------------------------
 model:
-  num_layers: 3          # ABlock 堆叠层数（已改为 3 层）
+  num_layers: 1          # ABlock 堆叠层数（1=单块实验，无 Mix 头/通道注意力）
   share_weights: false   # 各层 ABlock 是否共享权重
-  # use_skip_fusion=true 时使用 U-Net 式结构（最后几层带 SK 融合），层数由 num_layers 决定
   use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
   use_norm: true         # 是否使用归一化层
+  use_mix_head: false    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
 
   # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]
@@ -106,10 +106,10 @@ model:
     hidden: 16             # 32→16 减参
     num_layers: 1          # 2→1 减参
 
-  # 颜色校正模块
+  # 颜色校正模块（单块实验时可关闭）
   color_corrector:
-    enabled: true
-    hidden: 16             # 32→16 减参
+    enabled: false         # 单块实验关闭
+    hidden: 16
 
 # -----------------------------------------------------------------------------
 # 训练超参数

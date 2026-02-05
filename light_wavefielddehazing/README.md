@@ -49,6 +49,17 @@ c:/Users/wechyu/AppData/Local/Programs/Python/Python310/python.exe infer.py --ck
 
 Inference creates ./outputs/<timestamp>/ with dehazed images and an HTML summary.
 
+## 可视化网络 (Netron)
+
+安装依赖后，导出模型并用 Netron 在浏览器中查看结构：
+
+```
+pip install netron
+python view_netron.py
+```
+
+可选参数：`--config`、`--format onnx|pt`、`--no-browser`（仅导出不打开）、`--out 文件名`。
+
 ## Notes
 
 - PhaseModule and ZModule are modular. Edit their depth/width in `configs/default.yaml`.
