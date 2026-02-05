@@ -155,8 +155,14 @@ def build_model_from_config(cfg: dict) -> AStack:
     cc_cfg = mcfg.get("color_corrector", {})
     cc_hidden = cc_cfg.get("hidden", 0) if cc_cfg.get("enabled", False) else 0
 
+    # 调试：单独禁用某模块（写死 z 或 phi），便于排查哪一模块起作用
+    use_phase_module = not mcfg.get("disable_phase_module", False)
+    use_z_module = not mcfg.get("disable_z_module", False)
+    # 调试：强制 1 层时只建 1 个 ABlock，多余层不建
+    num_layers = max(1, int(mcfg["num_layers"]))
+
     model = AStack(
-        num_layers=mcfg["num_layers"],
+        num_layers=num_layers,
         share_weights=mcfg["share_weights"],
         color_corrector_hidden=cc_hidden,
         use_skip_fusion=mcfg.get("use_skip_fusion", True),
@@ -173,5 +179,7 @@ def build_model_from_config(cfg: dict) -> AStack:
         wavelengths=mcfg["wavelengths"],
         amp_mode=mcfg["amp_mode"],
         output_mode=mcfg["output_mode"],
+        use_phase_module=use_phase_module,
+        use_z_module=use_z_module,
     )
     return model

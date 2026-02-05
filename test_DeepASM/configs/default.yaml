@@ -12,10 +12,7 @@ paths:
   # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
   root: D:\Desktop\毕业论文\code\data
   # root: D:\声呐项目\qwh工作区
-  
-  # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
-  hazy_dir: RESIDE-IN/train/hazy
-  clean_dir: RESIDE-IN/train/GT
+
 
   # 是否使用旧版 hazy/clean 单一路径配置
   use_legacy_hazy_clear: false
@@ -83,6 +80,10 @@ model:
   use_norm: true         # 是否使用归一化层
   use_mix_head: false    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
 
+  # 调试：单独禁用某模块，用于排查是距离预测还是相位预测在起作用
+  disable_z_module: false      # true=禁用距离预测，写死 z=z_max/2
+  disable_phase_module: false  # true=禁用相位预测，写死 phi=0
+
   # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]
 
@@ -116,7 +117,7 @@ model:
 # 训练超参数
 # -----------------------------------------------------------------------------
 train:
-  epochs: 200            # 训练轮数
+  epochs: 50            # 训练轮数
   lr: 1.0e-4             # 学习率
   weight_decay: 1.0e-4   # 权重衰减（L2 正则）
   cosine_tmax: 100       # 余弦退火调度器的周期

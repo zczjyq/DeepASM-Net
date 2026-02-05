@@ -262,19 +262,25 @@ def main():
                     loss = loss + sat_weight * saturation_loss(pred, clean)
                 if z_reg_weight > 0.0 and hasattr(model, "last_zs"):
                     z_reg = 0.0
+                    nz = 0
                     for z in model.last_zs:
+                        if z is None:
+                            continue
                         z_reg = z_reg + torch.mean(torch.abs(z[:, 0] - z[:, 1]) + torch.abs(z[:, 1] - z[:, 2]))
-                    z_reg = z_reg / max(1, len(model.last_zs))
+                        nz += 1
+                    z_reg = z_reg / max(1, nz)
                     loss = loss + z_reg_weight * z_reg
                 if phase_tv_weight > 0.0 and hasattr(model, "last_phi_shareds"):
                     tv = 0.0
+                    nphi = 0
                     for phi_s in model.last_phi_shareds:
                         if phi_s is None:
                             continue
                         dx = torch.abs(phi_s[:, :, :, 1:] - phi_s[:, :, :, :-1]).mean()
                         dy = torch.abs(phi_s[:, :, 1:, :] - phi_s[:, :, :-1, :]).mean()
                         tv = tv + (dx + dy)
-                    tv = tv / max(1, len(model.last_phi_shareds))
+                        nphi += 1
+                    tv = tv / max(1, nphi)
                     loss = loss + phase_tv_weight * tv
 
             if not torch.isfinite(loss):
