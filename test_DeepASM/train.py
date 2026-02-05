@@ -206,6 +206,7 @@ def main():
         print(f"==> 已加载 {resume_path}, 从 epoch {start_epoch} 继续, best_psnr={best_psnr:.4f}")
 
     l1_weight = cfg["loss"]["l1"]
+    l2_weight = cfg["loss"].get("l2", 0.0)
     ssim_weight = cfg["loss"]["ssim"]
     perc_weight = cfg["loss"]["perceptual"]
     color_weight = cfg["loss"].get("color", 0.0)
@@ -248,6 +249,8 @@ def main():
                 pred = model(hazy)
                 pred = torch.clamp(pred, 0.0, 1.0)
                 loss = l1_weight * torch.mean(torch.abs(pred - clean))
+                if l2_weight > 0.0:
+                    loss = loss + l2_weight * torch.mean((pred - clean) ** 2)
                 if ssim_weight > 0.0:
                     loss = loss + ssim_weight * ssim_loss(pred, clean)
                 if perc_weight > 0.0 and perceptual is not None:
@@ -262,19 +265,25 @@ def main():
                     loss = loss + sat_weight * saturation_loss(pred, clean)
                 if z_reg_weight > 0.0 and hasattr(model, "last_zs"):
                     z_reg = 0.0
+                    nz = 0
                     for z in model.last_zs:
+                        if z is None:
+                            continue
                         z_reg = z_reg + torch.mean(torch.abs(z[:, 0] - z[:, 1]) + torch.abs(z[:, 1] - z[:, 2]))
-                    z_reg = z_reg / max(1, len(model.last_zs))
+                        nz += 1
+                    z_reg = z_reg / max(1, nz)
                     loss = loss + z_reg_weight * z_reg
                 if phase_tv_weight > 0.0 and hasattr(model, "last_phi_shareds"):
                     tv = 0.0
+                    nphi = 0
                     for phi_s in model.last_phi_shareds:
                         if phi_s is None:
                             continue
                         dx = torch.abs(phi_s[:, :, :, 1:] - phi_s[:, :, :, :-1]).mean()
                         dy = torch.abs(phi_s[:, :, 1:, :] - phi_s[:, :, :-1, :]).mean()
                         tv = tv + (dx + dy)
-                    tv = tv / max(1, len(model.last_phi_shareds))
+                        nphi += 1
+                    tv = tv / max(1, nphi)
                     loss = loss + phase_tv_weight * tv
 
             if not torch.isfinite(loss):

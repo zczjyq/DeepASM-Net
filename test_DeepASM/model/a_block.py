@@ -9,6 +9,7 @@ import torch.nn as nn
 from .asm import asm_propagate, FreqEnhance
 from .phase_module import PhaseModule
 from .z_module import ZModule
+from .transformer_block import SpatialTransformerBlock
 
 
 class _ChannelAttention(nn.Module):
@@ -76,6 +77,13 @@ class ABlock(nn.Module):
         wavelengths=(0.65, 0.53, 0.47),
         amp_mode: str = "identity",
         output_mode: str = "abs",
+        use_phase_module: bool = True,
+        use_z_module: bool = True,
+        use_transformer: bool = False,
+        transformer_embed_dim: int = 48,
+        transformer_heads: int = 4,
+        transformer_scale: int = 8,
+        transformer_dropout: float = 0.0,
     ):
         """
         Args:
@@ -91,12 +99,19 @@ class ABlock(nn.Module):
             wavelengths: RGB 三通道波长 (R, G, B)，单位与空间归一化一致
             amp_mode: 振幅模式，"identity" 或 "sqrt"
             output_mode: ASM 输出模式，"abs" 或 "abs2"
+            use_phase_module: 是否使用相位预测模块；False 时写死 phi=0，用于调试
+            use_z_module: 是否使用距离预测模块；False 时写死 z=z_max/2，用于调试
+            use_transformer: 是否在 norm 后加空间 Transformer，为相位/z 提供全局上下文
+            transformer_embed_dim/heads/scale/dropout: Transformer 块参数
         """
         super().__init__()
         self.use_norm = use_norm
         self.amp_mode = amp_mode
         self.output_mode = output_mode
         self.use_mix_head = use_mix_head
+        self.use_phase_module = use_phase_module
+        self.use_z_module = use_z_module
+        self.z_max = z_max
         self.register_buffer("wavelengths", torch.tensor(wavelengths))
 
         # 输入归一化
@@ -105,17 +120,36 @@ class ABlock(nn.Module):
         else:
             self.norm = nn.Identity()
 
-        # 相位预测模块
-        self.phase = PhaseModule(
-            in_ch=in_ch,
-            hidden=phase_hidden,
-            num_layers=phase_layers,
-            use_gn=use_norm,
-            use_channel_residual=phase_use_channel_residual,
-            residual_scale=phase_residual_scale,
-        )
-        # 传播距离预测模块
-        self.z_module = ZModule(in_ch=in_ch, hidden=z_hidden, num_layers=z_layers, z_max=z_max, use_gn=use_norm)
+        # 可选：空间 Transformer，在 norm 后对特征做自注意力，再喂给 phase/z
+        if use_transformer:
+            self.transformer = SpatialTransformerBlock(
+                in_ch=in_ch,
+                embed_dim=transformer_embed_dim,
+                num_heads=transformer_heads,
+                scale=transformer_scale,
+                dropout=transformer_dropout,
+            )
+        else:
+            self.transformer = None
+
+        # 相位预测模块（可禁用，禁用时 forward 中写死 phi=0）
+        if use_phase_module:
+            self.phase = PhaseModule(
+                in_ch=in_ch,
+                hidden=phase_hidden,
+                num_layers=phase_layers,
+                use_gn=use_norm,
+                use_channel_residual=phase_use_channel_residual,
+                residual_scale=phase_residual_scale,
+            )
+        else:
+            self.phase = None
+
+        # 传播距离预测模块（可禁用，禁用时 forward 中写死 z=z_max/2）
+        if use_z_module:
+            self.z_module = ZModule(in_ch=in_ch, hidden=z_hidden, num_layers=z_layers, z_max=z_max, use_gn=use_norm)
+        else:
+            self.z_module = None
 
         # 频域增强：FFT*H 后、IFFT 前（hidden 8 减参）
         self.freq_enhance = FreqEnhance(channels=in_ch, hidden=8)
@@ -156,12 +190,22 @@ class ABlock(nn.Module):
         Returns:
             去雾更新后的图像 (B, 3, H, W)
         """
-        # 1. 归一化并预测相位、传播距离
+        # 1. 归一化，可选加 Transformer 全局上下文后再预测相位、传播距离
         x_norm = self.norm(x)
-        phi = self.phase(x_norm)           # (B, 3, H, W)，相位 [-pi, pi]
-        z = self.z_module(x_norm)          # (B, 3, H, W)，传播距离 [0, z_max]
-        self.last_z = z
-        self.last_phi_shared = self.phase.last_phi_shared
+        if self.transformer is not None:
+            x_norm = self.transformer(x_norm)
+        if self.phase is not None:
+            phi = self.phase(x_norm)           # (B, 3, H, W)，相位 [-pi, pi]
+            self.last_phi_shared = self.phase.last_phi_shared
+        else:
+            phi = torch.zeros(x.shape[0], 3, x.shape[2], x.shape[3], device=x.device, dtype=x.dtype)
+            self.last_phi_shared = None
+        if self.z_module is not None:
+            z = self.z_module(x_norm)          # (B, 3, H, W)，传播距离 [0, z_max]
+            self.last_z = z
+        else:
+            z = torch.full((x.shape[0], 3, x.shape[2], x.shape[3]), self.z_max * 0.5, device=x.device, dtype=x.dtype)
+            self.last_z = None
 
         # 2. 构建复振幅场并 ASM 传播（强制 float32，避免 AMP 下的 ComplexHalf 警告）
         amp = self._amplitude(x).float()

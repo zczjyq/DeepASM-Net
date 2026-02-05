@@ -12,10 +12,7 @@ paths:
   # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
   root: D:\Desktop\毕业论文\code\data
   # root: D:\声呐项目\qwh工作区
-  
-  # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
-  hazy_dir: RESIDE-IN/train/hazy
-  clean_dir: RESIDE-IN/train/GT
+
 
   # 是否使用旧版 hazy/clean 单一路径配置
   use_legacy_hazy_clear: false
@@ -81,7 +78,19 @@ model:
   share_weights: false   # 各层 ABlock 是否共享权重
   use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
   use_norm: true         # 是否使用归一化层
-  use_mix_head: false    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
+  use_mix_head: true    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
+
+  # 调试：单独禁用某模块，用于排查是距离预测还是相位预测在起作用
+  disable_z_module: false      # true=禁用距离预测，写死 z=z_max/2
+  disable_phase_module: false  # true=禁用相位预测，写死 phi=0
+
+  # 可选：在 ABlock 内加入空间 Transformer，为相位/z 预测提供全局上下文
+  transformer:
+    enabled: false
+    embed_dim: 48
+    num_heads: 4
+    scale: 8        # 空间下采样倍数，序列长 (H/8)*(W/8)，越大越省显存
+    dropout: 0.0
 
   # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]
@@ -116,7 +125,7 @@ model:
 # 训练超参数
 # -----------------------------------------------------------------------------
 train:
-  epochs: 200            # 训练轮数
+  epochs: 50            # 训练轮数
   lr: 1.0e-4             # 学习率
   weight_decay: 1.0e-4   # 权重衰减（L2 正则）
   cosine_tmax: 100       # 余弦退火调度器的周期
@@ -129,17 +138,21 @@ train:
 # -----------------------------------------------------------------------------
 # 损失函数权重
 # -----------------------------------------------------------------------------
+# L1 = mean(|pred - clean|)，逐像素绝对误差，数值稳定、对 PSNR 也有帮助。
+# PSNR 定义是 10*log10(1/MSE)，即与 MSE(L2) 直接对应；若只冲 PSNR 可只留 l1 或只留 l2。
+# 下面为「只冲 PSNR」预设：仅开 l1，其余为 0；若要和 PSNR 完全对齐可设 l1: 0, l2: 1.0。
 loss:
-  l1: 1.0                # L1 重建损失
-  ssim: 0.1              # SSIM 损失（1 - SSIM）
-  perceptual: 0.02       # VGG 感知损失
-  color: 0.3             # 色度损失 (YCbCr)
-  luma: 0.3              # 亮度损失
-  edge: 0.02             # 边缘损失 (Sobel)
-  saturation: 0.5        # 饱和度损失
+  l1: 0.0                # L1 重建损失 mean(|pred-clean|)
+  l2: 1.0                # L2/MSE 损失，与 PSNR 直接对应，只冲 PSNR 可设 l2: 1.0、l1: 0
+  ssim: 0.0              # SSIM 损失（1 - SSIM）
+  perceptual: 0.0       # VGG 感知损失
+  color: 0.0             # 色度损失 (YCbCr)
+  luma: 0.0              # 亮度损失
+  edge: 0.0             # 边缘损失 (Sobel)
+  saturation: 0.0        # 饱和度损失
   z_reg: 0.0             # z 通道正则（三通道 z 差异）
-  phase_tv: 0.01         # 相位 Total Variation 正则
-  perceptual_layers: [3, 8, 15]  # VGG 感知损失使用的层索引
+  phase_tv: 0.0         # 相位 Total Variation 正则
+  perceptual_layers: [3, 8, 15]  # VGG 感知损失使用的层索引（perceptual>0 时有效）
 
 # -----------------------------------------------------------------------------
 # 输出目录
