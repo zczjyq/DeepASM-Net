@@ -206,6 +206,7 @@ def main():
         print(f"==> 已加载 {resume_path}, 从 epoch {start_epoch} 继续, best_psnr={best_psnr:.4f}")
 
     l1_weight = cfg["loss"]["l1"]
+    l2_weight = cfg["loss"].get("l2", 0.0)
     ssim_weight = cfg["loss"]["ssim"]
     perc_weight = cfg["loss"]["perceptual"]
     color_weight = cfg["loss"].get("color", 0.0)
@@ -248,6 +249,8 @@ def main():
                 pred = model(hazy)
                 pred = torch.clamp(pred, 0.0, 1.0)
                 loss = l1_weight * torch.mean(torch.abs(pred - clean))
+                if l2_weight > 0.0:
+                    loss = loss + l2_weight * torch.mean((pred - clean) ** 2)
                 if ssim_weight > 0.0:
                     loss = loss + ssim_weight * ssim_loss(pred, clean)
                 if perc_weight > 0.0 and perceptual is not None:
