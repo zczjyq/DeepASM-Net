@@ -18,7 +18,7 @@ model.eval()
 # 参数量（准确）
 total = sum(p.numel() for p in model.parameters())
 trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"总参数量: {total:,} ({total/1e6:.2f}M)")
+print(f"总参数量: {total:,} ({total/1e6:.4f}M)")
 print(f"可训练参数: {trainable:,} ({trainable/1e6:.2f}M)")
 
 # MACs / FLOPs（需要前向一次，输入尺寸影响结果）
