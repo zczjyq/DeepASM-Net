@@ -78,11 +78,19 @@ model:
   share_weights: false   # 各层 ABlock 是否共享权重
   use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
   use_norm: true         # 是否使用归一化层
-  use_mix_head: false    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
+  use_mix_head: true    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
 
   # 调试：单独禁用某模块，用于排查是距离预测还是相位预测在起作用
   disable_z_module: false      # true=禁用距离预测，写死 z=z_max/2
   disable_phase_module: false  # true=禁用相位预测，写死 phi=0
+
+  # 可选：在 ABlock 内加入空间 Transformer，为相位/z 预测提供全局上下文
+  transformer:
+    enabled: false
+    embed_dim: 48
+    num_heads: 4
+    scale: 8        # 空间下采样倍数，序列长 (H/8)*(W/8)，越大越省显存
+    dropout: 0.0
 
   # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]

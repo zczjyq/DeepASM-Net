@@ -9,6 +9,7 @@ import torch.nn as nn
 from .asm import asm_propagate, FreqEnhance
 from .phase_module import PhaseModule
 from .z_module import ZModule
+from .transformer_block import SpatialTransformerBlock
 
 
 class _ChannelAttention(nn.Module):
@@ -78,6 +79,11 @@ class ABlock(nn.Module):
         output_mode: str = "abs",
         use_phase_module: bool = True,
         use_z_module: bool = True,
+        use_transformer: bool = False,
+        transformer_embed_dim: int = 48,
+        transformer_heads: int = 4,
+        transformer_scale: int = 8,
+        transformer_dropout: float = 0.0,
     ):
         """
         Args:
@@ -95,6 +101,8 @@ class ABlock(nn.Module):
             output_mode: ASM 输出模式，"abs" 或 "abs2"
             use_phase_module: 是否使用相位预测模块；False 时写死 phi=0，用于调试
             use_z_module: 是否使用距离预测模块；False 时写死 z=z_max/2，用于调试
+            use_transformer: 是否在 norm 后加空间 Transformer，为相位/z 提供全局上下文
+            transformer_embed_dim/heads/scale/dropout: Transformer 块参数
         """
         super().__init__()
         self.use_norm = use_norm
@@ -111,6 +119,18 @@ class ABlock(nn.Module):
             self.norm = nn.GroupNorm(num_groups=1, num_channels=in_ch)
         else:
             self.norm = nn.Identity()
+
+        # 可选：空间 Transformer，在 norm 后对特征做自注意力，再喂给 phase/z
+        if use_transformer:
+            self.transformer = SpatialTransformerBlock(
+                in_ch=in_ch,
+                embed_dim=transformer_embed_dim,
+                num_heads=transformer_heads,
+                scale=transformer_scale,
+                dropout=transformer_dropout,
+            )
+        else:
+            self.transformer = None
 
         # 相位预测模块（可禁用，禁用时 forward 中写死 phi=0）
         if use_phase_module:
@@ -170,8 +190,10 @@ class ABlock(nn.Module):
         Returns:
             去雾更新后的图像 (B, 3, H, W)
         """
-        # 1. 归一化并预测相位、传播距离（可单独禁用，用于调试哪一模块起作用）
+        # 1. 归一化，可选加 Transformer 全局上下文后再预测相位、传播距离
         x_norm = self.norm(x)
+        if self.transformer is not None:
+            x_norm = self.transformer(x_norm)
         if self.phase is not None:
             phi = self.phase(x_norm)           # (B, 3, H, W)，相位 [-pi, pi]
             self.last_phi_shared = self.phase.last_phi_shared

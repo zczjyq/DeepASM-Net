@@ -181,5 +181,10 @@ def build_model_from_config(cfg: dict) -> AStack:
         output_mode=mcfg["output_mode"],
         use_phase_module=use_phase_module,
         use_z_module=use_z_module,
+        use_transformer=mcfg.get("transformer", {}).get("enabled", False),
+        transformer_embed_dim=mcfg.get("transformer", {}).get("embed_dim", 48),
+        transformer_heads=mcfg.get("transformer", {}).get("num_heads", 4),
+        transformer_scale=mcfg.get("transformer", {}).get("scale", 8),
+        transformer_dropout=mcfg.get("transformer", {}).get("dropout", 0.0),
     )
     return model
