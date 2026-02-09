@@ -1,4 +1,4 @@
-image.png"""
+"""
 统计模型参数量 (Params) 和 乘加运算量 (MACs/FLOPs)
 
 参数量：sum(p.numel()) 准确统计所有权重元素个数

@@ -1,0 +1,112 @@
+seed: 123
+
+paths:
+  root: ../../data
+  hazy_dir: RESIDE-IN/train/hazy
+  clean_dir: RESIDE-IN/train/GT
+  use_legacy_hazy_clear: false
+  auto_discover_in_gt: false
+  datasets:
+    - type: same_name
+      hazy_dir: RESIDE-IN/train/hazy
+      clean_dir: RESIDE-IN/train/GT
+  test_datasets:
+    - type: same_name
+      hazy_dir: RESIDE-IN/test/hazy
+      clean_dir: RESIDE-IN/test/GT
+
+split:
+  use_native_split: true
+  train_ratio: 0.85
+  shuffle: true
+
+loader:
+  batch_size: 8
+  val_batch_size: 8
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 4
+  persistent_workers: true
+
+transforms:
+  image_size: 256
+  random_flip: true
+  use_cv2_load: true
+
+model:
+  num_layers: 2
+  share_weights: false
+  use_skip_fusion: true
+  use_norm: true
+  use_mix_head: true
+  first_block_scale: 0.75
+
+  wavelengths: [0.65, 0.53, 0.47]
+  z_max: 0.3
+  amp_mode: identity
+  output_mode: abs
+
+  mix_hidden: 32
+  phase_module:
+    hidden: 16
+    num_layers: 1
+    use_channel_residual: true
+    phase_residual_scale: 0.6
+    use_vit: true
+    vit_patch_size: 3
+    vit_embed_dim: 24
+    vit_depth: 1
+    vit_num_heads: 2
+    vit_window_size: 8
+    vit_mlp_ratio: 2.0
+  z_module:
+    hidden: 16
+    num_layers: 1
+    use_vit: true
+    vit_patch_size: 3
+    vit_embed_dim: 24
+    vit_depth: 1
+    vit_num_heads: 2
+    vit_window_size: 8
+    vit_mlp_ratio: 2.0
+
+  color_corrector:
+    enabled: false
+    hidden: 16
+
+  tiny_vit:
+    enabled: true
+    patch_size: 3
+    embed_dim: 24
+    depth: 1
+    num_heads: 2
+    window_size: 8
+    mlp_ratio: 2.0
+
+train:
+  epochs: 200
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  cosine_tmax: 100
+  warmup_epochs: 5
+  grad_clip: 1.0
+  amp: true
+  log_interval: 50
+  fixed_val_samples: 12
+  compile: false
+
+loss:
+  l1: 1.0
+  ssim: 0.1
+  perceptual: 0.02
+  color: 0.3
+  luma: 0.3
+  edge: 0.02
+  saturation: 0.5
+  z_reg: 0.0
+  phase_tv: 0.01
+  perceptual_layers: [3, 8, 15]
+
+output:
+  runs_dir: ./runs
+  outputs_dir: ./outputs

@@ -1,0 +1,10 @@
+torch
+torchvision
+pillow
+pyyaml
+numpy
+tqdm
+opencv-python
+scipy
+lpips
+netron
