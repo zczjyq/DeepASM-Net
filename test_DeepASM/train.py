@@ -297,7 +297,8 @@ def main():
             scaler.step(optimizer)
             scaler.update()
 
-            running_loss += loss.item()
+            # 用 float32 记录，避免 AMP 下 float16 下溢显示为 0
+            running_loss += loss.detach().float().item()
             n_steps += 1
 
         train_loss = running_loss / max(1, n_steps)
@@ -325,9 +326,9 @@ def main():
 
         with open(log_path, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, f"{train_loss:.6f}", f"{val_psnr:.4f}", f"{val_ssim:.4f}"])
+            writer.writerow([epoch, f"{train_loss:.8f}", f"{val_psnr:.4f}", f"{val_ssim:.4f}"])
 
-        print(f"Epoch {epoch}: train_loss={train_loss:.6f}, val_psnr={val_psnr:.4f}, val_ssim={val_ssim:.4f}")
+        print(f"Epoch {epoch}: train_loss={train_loss:.8f}, val_psnr={val_psnr:.4f}, val_ssim={val_ssim:.4f}")
 
         # Save sample grid
         for hazy, clean, _, _ in fixed_loader:
