@@ -26,6 +26,7 @@ env/
 venv/
 ENV/
 .ipynb_checkpoints/
+runs/
 
 # --- C++ 编译文件 ---
 # 如果你在做 C++ 优化或运行相关工具，屏蔽编译产物
