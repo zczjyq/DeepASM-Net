@@ -10,9 +10,11 @@ seed: 123
 # -----------------------------------------------------------------------------
 paths:
   # 数据根目录，所有 hazy_dir / clean_dir 均相对于此路径
-  # root: D:\Desktop\毕业论文\code\data
-  root: D:\声呐项目\qwh工作区
-
+  root: D:/声呐项目/qwh工作区/RESIDE-IN
+  
+  # 旧版兼容：当 use_legacy_hazy_clear=true 时使用的目录（已弃用）
+  hazy_dir: train/hazy
+  clean_dir: train/GT
 
   # 是否使用旧版 hazy/clean 单一路径配置
   use_legacy_hazy_clear: false
@@ -26,15 +28,15 @@ paths:
   # - reside: hazy 100_6.png 对应 GT 100_6_0.xx.png（另一种 RESIDE 格式）
   datasets:
     - type: same_name
-      hazy_dir: RESIDE-IN/train/hazy
-      clean_dir: RESIDE-IN/train/GT
+      hazy_dir: train/hazy
+      clean_dir: train/GT
 
   # 测试集（仅当 split.use_native_split=true 时使用）
   # 使用数据集官方的 train/test 划分，验证 PSNR/SSIM 在 test 上计算
   test_datasets:
     - type: same_name
-      hazy_dir: RESIDE-IN/test/hazy
-      clean_dir: RESIDE-IN/test/GT
+      hazy_dir: test/hazy
+      clean_dir: test/GT
 
 # -----------------------------------------------------------------------------
 # 数据划分策略
@@ -55,14 +57,17 @@ split:
 # DataLoader 参数
 # -----------------------------------------------------------------------------
 loader:
-  batch_size: 8          # 训练 batch 大小，显存不足可减小（如 4）
+  batch_size: 16          # 训练 batch 大小，显存不足可减小（如 4）
   val_batch_size: 8      # 验证 batch 大小
-  num_workers: 8         # 数据加载进程数，建议为 CPU 核数的一半或相等
+  num_workers: 16         # 数据加载进程数，建议为 CPU 核数的一半或相等
   pin_memory: true       # 锁页内存，加速 CPU→GPU 数据传输
   prefetch_factor: 4     # 每个 worker 预取的 batch 数，减少 GPU 空闲等待
   persistent_workers: true  # 是否复用 worker，避免每个 epoch 重新创建
 
-# -----------------------------------------------------------------------------
+# -----------------------------------------------
+
+
+# ------------------------------
 # 数据增强与预处理
 # -----------------------------------------------------------------------------
 transforms:
@@ -74,23 +79,11 @@ transforms:
 # 模型结构
 # -----------------------------------------------------------------------------
 model:
-  num_layers: 1          # ABlock 堆叠层数（1=单块实验，无 Mix 头/通道注意力）
+  num_layers: 3          # ABlock 堆叠层数（已改为 3 层）
   share_weights: false   # 各层 ABlock 是否共享权重
+  # use_skip_fusion=true 时使用 U-Net 式结构（最后几层带 SK 融合），层数由 num_layers 决定
   use_skip_fusion: true  # 是否使用 U-Net 式跳跃连接 + SK Fusion
   use_norm: true         # 是否使用归一化层
-  use_mix_head: true    # 实验用：false=去掉 Mix 头与通道注意力，直接输出 ASM 的 J
-
-  # 调试：单独禁用某模块，用于排查是距离预测还是相位预测在起作用
-  disable_z_module: false      # true=禁用距离预测，写死 z=z_max/2
-  disable_phase_module: false  # true=禁用相位预测，写死 phi=0
-
-  # 可选：在 ABlock 内加入空间 Transformer，为相位/z 预测提供全局上下文
-  transformer:
-    enabled: false
-    embed_dim: 48
-    num_heads: 4
-    scale: 8        # 空间下采样倍数，序列长 (H/8)*(W/8)，越大越省显存
-    dropout: 0.0
 
   # 波长 (μm)，对应 R/G/B 三通道，用于 ASM 传播
   wavelengths: [0.65, 0.53, 0.47]
@@ -116,16 +109,16 @@ model:
     hidden: 16             # 32→16 减参
     num_layers: 1          # 2→1 减参
 
-  # 颜色校正模块（单块实验时可关闭）
+  # 颜色校正模块
   color_corrector:
-    enabled: false         # 单块实验关闭
-    hidden: 16
+    enabled: true
+    hidden: 16             # 32→16 减参
 
 # -----------------------------------------------------------------------------
 # 训练超参数
 # -----------------------------------------------------------------------------
 train:
-  epochs: 50            # 训练轮数
+  epochs: 500            # 训练轮数
   lr: 1.0e-4             # 学习率
   weight_decay: 1.0e-4   # 权重衰减（L2 正则）
   cosine_tmax: 100       # 余弦退火调度器的周期
@@ -138,21 +131,17 @@ train:
 # -----------------------------------------------------------------------------
 # 损失函数权重
 # -----------------------------------------------------------------------------
-# L1 = mean(|pred - clean|)，逐像素绝对误差，数值稳定、对 PSNR 也有帮助。
-# PSNR 定义是 10*log10(1/MSE)，即与 MSE(L2) 直接对应；若只冲 PSNR 可只留 l1 或只留 l2。
-# 下面为「只冲 PSNR」预设：仅开 l1，其余为 0；若要和 PSNR 完全对齐可设 l1: 0, l2: 1.0。
 loss:
-  l1: 0.0                # L1 重建损失 mean(|pred-clean|)
-  l2: 1.0                # L2/MSE 损失，与 PSNR 直接对应，只冲 PSNR 可设 l2: 1.0、l1: 0
-  ssim: 0.0              # SSIM 损失（1 - SSIM）
-  perceptual: 0.0       # VGG 感知损失
-  color: 0.0             # 色度损失 (YCbCr)
-  luma: 0.0              # 亮度损失
-  edge: 0.0             # 边缘损失 (Sobel)
-  saturation: 0.0        # 饱和度损失
+  l1: 1.0                # L1 重建损失
+  ssim: 0.1              # SSIM 损失（1 - SSIM）
+  perceptual: 0.02       # VGG 感知损失
+  color: 0.3             # 色度损失 (YCbCr)
+  luma: 0.3              # 亮度损失
+  edge: 0.02             # 边缘损失 (Sobel)
+  saturation: 0.5        # 饱和度损失
   z_reg: 0.0             # z 通道正则（三通道 z 差异）
-  phase_tv: 0.0         # 相位 Total Variation 正则
-  perceptual_layers: [3, 8, 15]  # VGG 感知损失使用的层索引（perceptual>0 时有效）
+  phase_tv: 0.01         # 相位 Total Variation 正则
+  perceptual_layers: [3, 8, 15]  # VGG 感知损失使用的层索引
 
 # -----------------------------------------------------------------------------
 # 输出目录
