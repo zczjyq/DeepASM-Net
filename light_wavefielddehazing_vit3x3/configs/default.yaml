@@ -1,4 +1,4 @@
-seed: 123
+﻿seed: 123
 
 paths:
   root: ../../data
@@ -34,7 +34,7 @@ transforms:
   use_cv2_load: true
 
 model:
-  num_layers: 2
+  num_layers: 3
   share_weights: false
   use_skip_fusion: true
   use_norm: true
@@ -110,3 +110,4 @@ loss:
 output:
   runs_dir: ./runs
   outputs_dir: ./outputs
+

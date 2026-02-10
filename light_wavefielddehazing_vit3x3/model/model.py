@@ -1,22 +1,11 @@
-"""
-Wavefield Dehaze 网络主模块
-
-本模块包含：
-- ColorCorrector: 后处理颜色校正模块
-- SKFusion: 跳跃连接融合模块（参考 DehazeFormer）
-- AStack: 主网络，支持串行或 U-Net 式多尺度+跳跃结构
-"""
-import torch
+﻿import torch
 import torch.nn as nn
 
 from .a_block import ABlock
 
 
 class SKFusion(nn.Module):
-    """
-    Selective Kernel 融合：将当前特征与跳跃特征融合。
-    参考 DehazeFormer 的 SK Fusion，用于解码器与编码器跳跃连接结合。
-    """
+    """Selective-kernel fusion between current and skip features."""
 
     def __init__(self, channels: int = 3, reduction: int = 4):
         super().__init__()
@@ -31,10 +20,6 @@ class SKFusion(nn.Module):
         )
 
     def forward(self, curr: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
-        """
-        curr: 当前层输出 (B, C, H, W)
-        skip: 跳跃连接 (B, C, H, W)，需与 curr 同分辨率
-        """
         if curr.shape != skip.shape:
             skip = nn.functional.interpolate(skip, size=curr.shape[2:], mode="bilinear", align_corners=False)
         concat = torch.cat([curr, skip], dim=1)
@@ -43,25 +28,10 @@ class SKFusion(nn.Module):
 
 
 class ColorCorrector(nn.Module):
-    """
-    后处理颜色校正模块（可选）
-
-    在 ASM 去雾管道之后应用，接收去雾结果和原始有雾输入，
-    预测逐像素的仿射变换 scale 和 bias：
-        output = scale * dehazed + bias
-
-    初始化时 scale≈1、bias≈0（恒等变换），可安全加载到已训练的 AStack 上
-    而不破坏原有效果。
-    """
+    """Optional post color correction head."""
 
     def __init__(self, in_ch: int = 3, hidden: int = 16):
-        """
-        Args:
-            in_ch: 输入通道数，RGB 为 3
-            hidden: 隐藏层通道数
-        """
         super().__init__()
-        # 特征提取：concat(dehazed, original) -> 6 通道
         self.net = nn.Sequential(
             nn.Conv2d(in_ch * 2, hidden, kernel_size=3, padding=1),
             nn.GroupNorm(1, hidden),
@@ -70,37 +40,23 @@ class ColorCorrector(nn.Module):
             nn.GroupNorm(1, hidden),
             nn.SiLU(inplace=True),
         )
-        # 输出头：预测 scale 和 bias
         self.to_scale = nn.Conv2d(hidden, in_ch, kernel_size=1)
         self.to_bias = nn.Conv2d(hidden, in_ch, kernel_size=1)
 
-        # 恒等初始化：scale→1, bias→0
         nn.init.zeros_(self.to_scale.weight)
         nn.init.ones_(self.to_scale.bias)
         nn.init.zeros_(self.to_bias.weight)
         nn.init.zeros_(self.to_bias.bias)
 
     def forward(self, dehazed: torch.Tensor, original: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            dehazed: 去雾后的图像 (B, 3, H, W)
-            original: 原始有雾图像 (B, 3, H, W)
-
-        Returns:
-            颜色校正后的图像 (B, 3, H, W)
-        """
         feat = self.net(torch.cat([dehazed, original], dim=1))
-        scale = self.to_scale(feat)   # (B, 3, H, W)，初始接近 1
-        bias = self.to_bias(feat)     # (B, 3, H, W)，初始接近 0
+        scale = self.to_scale(feat)
+        bias = self.to_bias(feat)
         return dehazed * scale + bias
 
 
 class AStack(nn.Module):
-    """
-    主去雾网络：N 层 ABlock + 层间残差（N 由 num_layers 指定，可设为 1 做单块实验）
-
-    结构：x -> [ABlock1 + res0*x] -> ... -> [ABlockN + res_{N-1}*x_{N-1}] -> out
-    """
+    """Stacked ABlock backbone."""
 
     def __init__(
         self,
@@ -113,20 +69,30 @@ class AStack(nn.Module):
     ):
         super().__init__()
         self.num_layers = max(1, int(num_layers))
+        self.use_skip_fusion = bool(use_skip_fusion and self.num_layers > 1)
+
         self.blocks = nn.ModuleList()
         for i in range(self.num_layers):
             block_kwargs = dict(ablock_kwargs)
             if i == 0 and first_block_scale < 1.0:
                 block_kwargs = self._shrink_block_kwargs(block_kwargs, first_block_scale)
             self.blocks.append(ABlock(**block_kwargs))
-        self.res_scales = nn.ParameterList([
-            nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_layers)
-        ])
+
+        if self.use_skip_fusion:
+            self.skip_fusions = nn.ModuleList([SKFusion(channels=3) for _ in range(self.num_layers - 1)])
+        else:
+            self.skip_fusions = nn.ModuleList()
+
+        # Keep residual path for non-skip-fusion mode.
+        self.res_scales = nn.ParameterList([nn.Parameter(torch.tensor(0.1)) for _ in range(self.num_layers)])
 
         if color_corrector_hidden > 0:
             self.color_corrector = ColorCorrector(in_ch=3, hidden=color_corrector_hidden)
         else:
             self.color_corrector = None
+
+        # currently unused, kept for config compatibility
+        self.share_weights = bool(share_weights)
 
     @staticmethod
     def _scaled_channels(value: int, scale: float, minimum: int = 4) -> int:
@@ -164,7 +130,7 @@ class AStack(nn.Module):
         self.last_zs = []
         self.last_phi_shareds = []
 
-        def _run(blk, inp):
+        def _run(blk: ABlock, inp: torch.Tensor) -> torch.Tensor:
             out = blk(inp)
             self.last_zs.append(blk.last_z)
             self.last_phi_shareds.append(blk.last_phi_shared)
@@ -172,8 +138,21 @@ class AStack(nn.Module):
 
         inp = x
         for i in range(self.num_layers):
-            out = _run(self.blocks[i], inp)
-            inp = out + self.res_scales[i] * inp
+            if i == 0:
+                block_in = inp
+            elif self.use_skip_fusion:
+                # requested pipeline: stage 2/3 input = fusion(previous result, original image)
+                block_in = self.skip_fusions[i - 1](inp, original)
+            else:
+                block_in = inp
+
+            out = _run(self.blocks[i], block_in)
+
+            if self.use_skip_fusion:
+                inp = out
+            else:
+                inp = out + self.res_scales[i] * inp
+
         x = torch.clamp(inp, 0.0, 1.0)
         if self.color_corrector is not None:
             x = self.color_corrector(x, original)
@@ -182,15 +161,6 @@ class AStack(nn.Module):
 
 
 def build_model_from_config(cfg: dict) -> AStack:
-    """
-    从 YAML 配置字典构建 AStack 模型
-
-    Args:
-        cfg: 完整配置，需包含 cfg["model"] 及其子项
-
-    Returns:
-        配置好的 AStack 模型实例
-    """
     mcfg = cfg["model"]
     phase_cfg = mcfg["phase_module"]
     z_cfg = mcfg["z_module"]
