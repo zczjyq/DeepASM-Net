@@ -61,7 +61,7 @@ class TinyViTFusion(nn.Module):
     """
     Lightweight ViT branch:
     - 3x3 patch embedding (configurable)
-    - local window self-attention on patch tokens
+    - local window self-attention with shifted window (DehazeFormer style)
     - bilinear upsample back to input size
     """
 
@@ -76,6 +76,7 @@ class TinyViTFusion(nn.Module):
         window_size: int = 8,
         mlp_ratio: float = 2.0,
         drop: float = 0.0,
+        use_shifted_window: bool = True,
     ):
         super().__init__()
         if patch_size < 1:
@@ -88,6 +89,7 @@ class TinyViTFusion(nn.Module):
             raise ValueError("embed_dim must be divisible by num_heads")
         self.patch_size = int(patch_size)
         self.window_size = max(1, int(window_size))
+        self.shift_size = self.window_size // 2 if use_shifted_window else 0
 
         self.patch_embed = nn.Conv2d(in_ch, embed_dim, kernel_size=self.patch_size, stride=self.patch_size)
         self.pos_conv = nn.Conv2d(embed_dim, embed_dim, kernel_size=3, padding=1, groups=embed_dim)
@@ -108,11 +110,23 @@ class TinyViTFusion(nn.Module):
         _, c, hp, wp = feat.shape
         ws = min(self.window_size, hp, wp)
         ws = max(1, ws)
+        shift = self.shift_size if (ws > 1 and self.shift_size > 0) else 0
 
-        tokens, shape_info = _partition_windows(feat, ws)
-        for blk in self.blocks:
+        for i, blk in enumerate(self.blocks):
+            # Shifted window: odd layers shift, even layers no shift (DehazeFormer style)
+            if shift > 0 and i % 2 == 1:
+                feat_shifted = torch.roll(feat, shifts=(-shift, -shift), dims=(2, 3))
+            else:
+                feat_shifted = feat
+
+            tokens, shape_info = _partition_windows(feat_shifted, ws)
             tokens = blk(tokens)
-        feat = _reverse_windows(tokens, ws, b, c, shape_info)
+            feat_blk = _reverse_windows(tokens, ws, b, c, shape_info)
+
+            if shift > 0 and i % 2 == 1:
+                feat_blk = torch.roll(feat_blk, shifts=(shift, shift), dims=(2, 3))
+
+            feat = feat_blk
 
         feat = F.interpolate(feat, size=(h, w), mode="bilinear", align_corners=False)
         out = self.out_proj(feat)

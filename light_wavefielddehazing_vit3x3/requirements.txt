@@ -8,3 +8,5 @@ opencv-python
 scipy
 lpips
 netron
+# 可选：用于 profile_params_macs.py 统计 MACs
+# pip install fvcore  或  pip install thop

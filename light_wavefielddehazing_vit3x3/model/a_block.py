@@ -4,14 +4,11 @@ Core ABlock for wavefield dehazing.
 Pipeline:
 1) Predict phase phi and propagation distance z from input image.
 2) Build complex field U0 = A * exp(i * phi).
-3) Propagate U0 with differentiable ASM to get J.
-4) Fuse [x, J_luma, J_contrast] in mix head to predict residual delta.
-5) Output x + alpha * delta.
+3) Propagate U0 with differentiable ASM to get J.  [ASM 核心]
+4) Fuse [x, J_luma, J_contrast] in mix head to predict K, B (DehazeFormer style).
+5) Output K*x - B + x (atmospheric scattering form).
 
-This version optionally adds a tiny ViT branch in mix head:
-- 3x3 patch embedding (configurable)
-- local window self-attention
-- upsample back and fuse with conv residual branch
+Mix head optionally adds TinyViT branch with shifted window.
 """
 import torch
 import torch.nn as nn
@@ -23,7 +20,7 @@ from .z_module import ZModule
 
 
 class _ChannelAttention(nn.Module):
-    """SE-like channel attention for residual refinement."""
+    """SE-like channel attention for K,B refinement."""
 
     def __init__(self, ch: int, reduction: int = 4):
         super().__init__()
@@ -40,6 +37,10 @@ class _ChannelAttention(nn.Module):
         w = x.mean(dim=(2, 3))
         w = self.fc(w).view(b, c, 1, 1)
         return x * w
+
+
+# Mix head 输出通道: K(1) + B(3) = 4
+MIX_OUT_CH = 4
 
 
 class ABlock(nn.Module):
@@ -128,33 +129,40 @@ class ABlock(nn.Module):
                 nn.Conv2d(mix_hidden, mix_hidden, kernel_size=3, padding=1),
                 nn.GroupNorm(1, mix_hidden),
                 nn.SiLU(inplace=True),
-                nn.Conv2d(mix_hidden, in_ch, kernel_size=1),
+                nn.Conv2d(mix_hidden, MIX_OUT_CH, kernel_size=1),
             )
+            # Init last conv: K≈1, B≈0 for identity at start (K*x - B + x = x)
+            nn.init.zeros_(self.mix[-1].weight)
+            with torch.no_grad():
+                self.mix[-1].bias.zero_()
+                self.mix[-1].bias[0] = 1.0
+
             if self.use_tiny_vit:
                 self.tiny_vit = TinyViTFusion(
                     in_ch=in_ch + 2,
-                    out_ch=in_ch,
+                    out_ch=MIX_OUT_CH,
                     patch_size=vit_patch_size,
                     embed_dim=vit_embed_dim,
                     depth=vit_depth,
                     num_heads=vit_num_heads,
                     window_size=vit_window_size,
                     mlp_ratio=vit_mlp_ratio,
+                    use_shifted_window=True,
                 )
-                # Start from original conv path behavior, then learn ViT contribution.
-                self.vit_scale = nn.Parameter(torch.tensor(0.0))
+                # Init TinyViT output to 0 (conv branch provides identity)
+                nn.init.zeros_(self.tiny_vit.out_proj[-1].weight)
+                nn.init.zeros_(self.tiny_vit.out_proj[-1].bias)
+                self.vit_scale = nn.Parameter(torch.tensor(0.1))
             else:
                 self.tiny_vit = None
                 self.vit_scale = None
-            self.ca = _ChannelAttention(in_ch)
-            self.alpha = nn.Parameter(torch.tensor(0.3))
+            self.ca = _ChannelAttention(MIX_OUT_CH)
             self.register_buffer("_luma_w", torch.tensor([0.299, 0.587, 0.114]).view(1, 3, 1, 1))
         else:
             self.mix = None
             self.tiny_vit = None
             self.vit_scale = None
             self.ca = None
-            self.alpha = None
             self._luma_w = None
 
         self.last_z = None
@@ -197,10 +205,12 @@ class ABlock(nn.Module):
         j_contrast = j_luma - x_luma
         mix_in = torch.cat([x, j_luma, j_contrast], dim=1)
 
-        delta = self.mix(mix_in)
+        kb = self.mix(mix_in)
         if self.tiny_vit is not None:
-            delta = delta + self.vit_scale * self.tiny_vit(mix_in)
-        delta = self.ca(delta)
+            kb = kb + self.vit_scale * self.tiny_vit(mix_in)
+        kb = self.ca(kb)
 
-        out = x + self.alpha * delta
+        K = kb[:, 0:1]
+        B = kb[:, 1:4]
+        out = K * x - B + x
         return out
