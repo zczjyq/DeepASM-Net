@@ -87,6 +87,42 @@ def build_pairs_same_name(root: str, hazy_dir: str, clean_dir: str) -> List[Pair
     return pairs
 
 
+def build_pairs_hazy_gt_suffix(root: str, hazy_dir: str, clean_dir: str) -> List[PairItem]:
+    """
+    按前缀配对：hazy 目录下 XX_hazy.png，GT 目录下 XX_GT.png（或 XX_gt.png），
+    通过去掉 _hazy / _GT 得到相同前缀 XX 进行配对。
+    如 01_hazy.png <-> 01_GT.png
+    """
+    hazy_root = os.path.join(root, hazy_dir)
+    clean_root = os.path.join(root, clean_dir)
+    clean_map: Dict[str, str] = {}
+    for path in _list_images(clean_root):
+        name = os.path.basename(path)
+        base, _ = os.path.splitext(name)
+        base_lower = base.lower()
+        if base_lower.endswith("_gt"):
+            prefix = base_lower[:-3]
+        else:
+            continue
+        clean_map[prefix] = path
+    pairs: List[PairItem] = []
+    for path in _list_images(hazy_root):
+        name = os.path.basename(path)
+        base, _ = os.path.splitext(name)
+        base_lower = base.lower()
+        if base_lower.endswith("_hazy"):
+            prefix = base_lower[:-5]
+        else:
+            continue
+        clean_path = clean_map.get(prefix)
+        if clean_path is None:
+            continue
+        clean_id = int(hashlib.md5(prefix.encode("utf-8")).hexdigest()[:8], 16)
+        pairs.append(PairItem(path, clean_path, clean_id, 0))
+    pairs.sort(key=lambda x: (x.clean_id, x.haze_level))
+    return pairs
+
+
 def build_pairs_reside(root: str, hazy_dir: str, clean_dir: str) -> List[PairItem]:
     """
     RESIDE train 配对：hazy 为 scene_level.png，GT 为 scene_level_beta.png
@@ -244,6 +280,8 @@ def _collect_pairs_from_entries(root: str, entries: list, debug: bool = True) ->
             pairs.extend(build_pairs_same_name(root, hd, cd))
         elif t == "reside":
             pairs.extend(build_pairs_reside(root, hd, cd))
+        elif t == "hazy_gt":
+            pairs.extend(build_pairs_hazy_gt_suffix(root, hd, cd))
         else:
             pairs.extend(build_pairs_hazy_clear(root, hd, cd))
         if debug:
@@ -300,6 +338,8 @@ def get_dataloaders(cfg: dict, debug: bool = None):
                 pairs.extend(build_pairs_same_name(root, entry["hazy_dir"], entry["clean_dir"]))
             elif t == "reside":
                 pairs.extend(build_pairs_reside(root, entry["hazy_dir"], entry["clean_dir"]))
+            elif t == "hazy_gt":
+                pairs.extend(build_pairs_hazy_gt_suffix(root, entry["hazy_dir"], entry["clean_dir"]))
             else:
                 pairs.extend(build_pairs_hazy_clear(root, entry["hazy_dir"], entry["clean_dir"]))
         if cfg["paths"].get("auto_discover_in_gt", True):
