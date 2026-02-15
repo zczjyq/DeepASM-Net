@@ -1,15 +1,18 @@
-﻿seed: 123
+# 约 5M 参数的大模型配置（由 default 放大）
+# 训练: python train.py --config configs/5m.yaml
+# 参数量: python count_params.py (需在代码里改为读 5m.yaml) 或 build 时指定 config
+seed: 123
 
 paths:
   root: ../../data
-  hazy_dir: RESIDE-IN/test/hazy
-  clean_dir: RESIDE-IN/test/GT
+  hazy_dir: RESIDE-IN/train/hazy
+  clean_dir: RESIDE-IN/train/GT
   use_legacy_hazy_clear: false
   auto_discover_in_gt: false
   datasets:
     - type: same_name
-      hazy_dir: RESIDE-IN/test/hazy
-      clean_dir: RESIDE-IN/test/GT
+      hazy_dir: RESIDE-IN/train/hazy
+      clean_dir: RESIDE-IN/train/GT
   test_datasets:
     - type: same_name
       hazy_dir: RESIDE-IN/test/hazy
@@ -21,8 +24,8 @@ split:
   shuffle: true
 
 loader:
-  batch_size: 8
-  val_batch_size: 8
+  batch_size: 4
+  val_batch_size: 4
   num_workers: 8
   pin_memory: true
   prefetch_factor: 4
@@ -34,60 +37,60 @@ transforms:
   use_cv2_load: true
 
 model:
-  num_layers: 3
+  num_layers: 4
   share_weights: false
   use_skip_fusion: true
   use_norm: true
   use_mix_head: true
-  first_block_scale: 0.75
+  first_block_scale: 1.0
 
   wavelengths: [0.65, 0.53, 0.47]
   z_max: 0.3
   amp_mode: identity
   output_mode: abs
 
-  mix_hidden: 32
+  mix_hidden: 96
   phase_module:
-    hidden: 16
-    num_layers: 1
+    hidden: 48
+    num_layers: 2
     use_channel_residual: true
     phase_residual_scale: 0.6
     use_vit: true
     vit_patch_size: 3
-    vit_embed_dim: 24
-    vit_depth: 1
-    vit_num_heads: 2
+    vit_embed_dim: 64
+    vit_depth: 2
+    vit_num_heads: 4
     vit_window_size: 8
-    vit_mlp_ratio: 2.0
+    vit_mlp_ratio: 4.0
   z_module:
-    hidden: 16
-    num_layers: 1
+    hidden: 48
+    num_layers: 2
     use_vit: true
     vit_patch_size: 3
-    vit_embed_dim: 24
-    vit_depth: 1
-    vit_num_heads: 2
+    vit_embed_dim: 64
+    vit_depth: 2
+    vit_num_heads: 4
     vit_window_size: 8
-    vit_mlp_ratio: 2.0
+    vit_mlp_ratio: 4.0
 
   color_corrector:
-    enabled: false
-    hidden: 16
+    enabled: true
+    hidden: 32
 
   tiny_vit:
     enabled: true
     patch_size: 3
-    embed_dim: 24
-    depth: 1
-    num_heads: 2
-    window_size: 2
-    mlp_ratio: 2.0
+    embed_dim: 64
+    depth: 2
+    num_heads: 4
+    window_size: 8
+    mlp_ratio: 4.0
 
 train:
   epochs: 200
   lr: 1.0e-4
   weight_decay: 1.0e-4
-  cosine_tmax: 100
+  cosine_tmax: 200
   warmup_epochs: 5
   grad_clip: 1.0
   amp: true
@@ -110,4 +113,3 @@ loss:
 output:
   runs_dir: ./runs
   outputs_dir: ./outputs
-

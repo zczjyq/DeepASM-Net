@@ -1,21 +1,16 @@
 """
 统计模型参数量 (Params) 和 乘加运算量 (MACs/FLOPs)
 
-用法: python count_params.py [--config configs/5m.yaml]
+参数量：sum(p.numel()) 准确统计所有权重元素个数
+MACs：Multiply-Accumulate，1 MAC = 1 次乘法 + 1 次加法
+FLOPs：约等于 2 * MACs（一次 MAC 算 2 次浮点运算）
 """
-import argparse
 import yaml
 import torch
 from model.model import build_model_from_config
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--config", default="configs/default.yaml", help="配置文件路径")
-args = parser.parse_args()
-
-with open(args.config, "r", encoding="utf-8") as f:
+with open("configs/default.yaml", "r", encoding="utf-8") as f:
     cfg = yaml.safe_load(f)
-
-print(f"Config: {args.config}")
 
 model = build_model_from_config(cfg)
 model.eval()
